@@ -9,3 +9,6 @@ Siga as instruções abaixo para configurar a impressão de senhas de atendiment
 3. Marque a opção "Imprimir Senha".
 4. No campo "Método de impressão de senhas", selecione a opção "Aplicativo de Impressão".
 5. Certifique-se de seguir essas configurações para garantir que a impressão de senhas de atendimento funcione corretamente.
+
+## Para compilar o arquivo executável:
+pyinstaller printer_app.spec
