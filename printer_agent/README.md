@@ -1,107 +1,103 @@
-# Agente de Impressão - Meu Atendimento
+# Agente de Impressão — Meu Atendimento
 
-Aplicativo para Windows que recebe comandos do servidor Meu Atendimento e imprime os tickets automaticamente na impressora térmica do totem.
+Aplicativo para Windows que recebe comandos do servidor Meu Atendimento e imprime os tickets na impressora térmica do totem.
 
-## Como instalar
+---
 
-### Opção 1: Executável (recomendado)
+## Instalação
 
-1. Baixe o arquivo `printer_agent.exe` da pasta de releases
-2. Copie para uma pasta no computador do totem (ex: `C:\MeuAtendimento\`)
-3. Execute o `printer_agent.exe`
+### Executável (recomendado)
 
-### Opção 2: Rodar com Python (desenvolvimento)
+1. Baixe `printer_agent.exe` (pasta [releases](.) ou gere com o build abaixo).
+2. Copie para uma pasta no totem (ex: `C:\MeuAtendimento\`).
+3. Execute `printer_agent.exe`.
 
-1. Instale o [Python 3.10+](https://www.python.org/downloads/)
-2. Abra o terminal na pasta `printer_agent`
-3. Instale as dependências:
-   ```
+### Python (desenvolvimento)
+
+1. Instale [Python 3.10+](https://www.python.org/downloads/).
+2. No terminal, na pasta `printer_agent`:
+   ```bash
    pip install -r requirements.txt
-   ```
-4. Execute:
-   ```
    python main.py
    ```
-
-   **Modo desenvolvimento** (reinicia sozinho ao salvar código):
-   ```
+3. **Modo desenvolvimento** (reinicia ao salvar código):
+   ```bash
    python dev.py
    ```
-   O agente será reiniciado automaticamente sempre que você salvar um arquivo `.py`.
 
-### Gerar o executável (printer_agent.exe)
+---
 
-1. Abra o terminal na pasta `printer_agent`.
-2. Execute (no **PowerShell** use `.\` antes do script):
-   ```
-   .\build_exe.bat
-   ```
-   ou no CMD:
-   ```
-   build_exe.bat
-   ```
-   Ou manualmente:
-   ```
-   pip install -r requirements.txt
-   pyinstaller printer_agent.spec
-   ```
-3. O executável será criado em `printer_agent\dist\printer_agent.exe`.
+## Build do executável
 
-## Como configurar
+Na pasta `printer_agent`:
 
-Ao executar, o agente aparece como um ícone na **bandeja do sistema** (perto do relógio do Windows).
+- **PowerShell:** `.\build_exe.ps1` ou `.\build_exe.bat`
+- **CMD:** `build_exe.bat`
 
-1. Clique com o **botão direito** no ícone
-2. Clique em **Configurações**
-3. Preencha os campos:
+Ou manualmente:
 
-| Campo | O que colocar |
-|-------|---------------|
-| **Ambiente** | Selecione o servidor correto (Produção Brasil, Produção US, Homologação ou Localhost para testes) |
-| **Token** | O código UUID do totem (veja abaixo como encontrar) |
-| **Impressora** | Selecione a impressora térmica na lista. Clique em "Atualizar" se ela não aparecer |
-| **Conectar automaticamente** | Marque para o agente conectar sozinho ao abrir |
+```bash
+pip install -r requirements.txt
+pyinstaller printer_agent.spec
+```
 
-4. Clique em **Salvar**
+O exe será gerado em `dist\printer_agent.exe`.
 
-O ícone na bandeja ficará **verde** quando conectado com sucesso.
+**Arquivos ignorados no build:** `build/`, `dist/`, `*.exe` (veja `.gitignore`). Após o build, pode apagar a pasta `build\` para liberar espaço.
 
-### Onde encontrar o Token
+---
 
-1. Acesse o **painel administrativo** do Meu Atendimento
-2. Vá até o cadastro do **Totem**
-3. Copie o campo **identificador** (é um código UUID, ex: `a1b2c3d4-e5f6-7890-abcd-ef1234567890`)
+## Assets (imagens)
 
-## Como usar
+Coloque na pasta `printer_agent`:
 
-Depois de configurado, o agente funciona automaticamente:
+| Arquivo           | Uso                                |
+|-------------------|------------------------------------|
+| `tray_icon.png`   | Ícone na bandeja do sistema        |
+| `logo.png`        | Logo no cabeçalho da janela de configuração |
 
-- Quando um cliente retira uma senha no totem, o ticket é impresso na impressora térmica
-- Se a conexão cair, o agente reconecta sozinho
-- O ícone na bandeja mostra o status:
-  - **Verde** = conectado
-  - **Vermelho** = desconectado
-  - **Amarelo** = conectando
+---
 
-### Menu do ícone (botão direito)
+## Configuração
 
-- **Configurações** — abre a janela de configuração
-- **Reconectar** — força uma nova conexão com o servidor
-- **Impressão de Teste** — imprime um ticket de teste para verificar a impressora
-- **Sair** — fecha o agente
+1. Execute o agente; o ícone aparece na **bandeja do sistema** (perto do relógio).
+2. Clique com o **botão direito** no ícone → **Configurações**.
+3. Preencha:
+
+| Campo | Descrição |
+|-------|-----------|
+| **Ambiente** | Produção Brasil, Produção US, Homologação ou Localhost |
+| **Token** | UUID do totem (painel → Totem → identificador) |
+| **Impressora** | Impressora térmica; use "Atualizar" se não listar |
+| **Modelo de comprovante** | Reduzido, Destaque (SENHA primeiro) ou Compacto |
+| **Conectar automaticamente** | Marque para conectar ao iniciar |
+
+4. **Salvar**. Use **Testar Conexão** para reconectar; o status na janela atualiza sozinho.
+
+---
+
+## Uso
+
+- Senha retirada no totem → ticket impresso na impressora configurada.
+- Ícone **verde** = conectado; **vermelho** = desconectado; **laranja** = conectando.
+- Menu (botão direito): **Configurações**, **Reconectar**, **Impressão de Teste**, **Sair**.
+
+---
 
 ## Solução de problemas
 
-| Problema | O que fazer |
-|----------|-------------|
-| Ícone vermelho | Verifique se o ambiente e o token estão corretos nas configurações |
-| "Autenticação falhou" | O token está errado ou o totem está inativo no painel. Verifique o cadastro do totem |
-| Impressora não aparece na lista | Verifique se a impressora está ligada e instalada no Windows. Clique em "Atualizar" |
-| Ticket não imprime | Verifique se a impressora selecionada é a correta e se tem papel |
-| Agente não reconecta | Se o token está errado, o agente para de tentar. Corrija o token e clique em "Reconectar" |
+| Problema | Ação |
+|----------|------|
+| Ícone vermelho | Conferir ambiente e token nas configurações |
+| "Autenticação falhou" | Token incorreto ou totem inativo no painel |
+| Impressora não aparece | Ligar impressora, clicar em "Atualizar" |
+| Ticket não imprime | Conferir impressora selecionada e papel |
+| Status não atualiza na janela | Clicar em "Testar Conexão"; o status atualiza em seguida |
+
+---
 
 ## Requisitos
 
 - Windows 10 ou 11
-- Impressora térmica (ex: Epson TM-T20II, Elgin i9, ou compatível)
+- Impressora térmica (ex.: Epson TM-T20II, Elgin i9 ou compatível)
 - Conexão com a internet

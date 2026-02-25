@@ -1,8 +1,0 @@
-Agente de impressão: interface, modelos de comprovante e build exe
-
-- Interface: layout com cor #334398, logo (SIGA e Meu Atendimento), status em tempo real
-- Modelos de comprovante: Reduzido, Destaque (SENHA primeiro, 80mm), Compacto
-- Tray: ícone com logo "OG Meu Atendimento Virtual (4).png"
-- Testar Conexão: feedback na janela e atualização do status ao reconectar
-- Build: .gitignore, printer_agent.spec, build_exe.bat/ps1, suporte a escpos capabilities.json
-- Dev: dev.py para reinício automático ao salvar .py

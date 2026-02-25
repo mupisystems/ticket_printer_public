@@ -9,9 +9,9 @@ spec_dir = SPECPATH
 
 block_cipher = None
 
-# Ícones e assets do projeto
+# Ícones e assets: logo.png (cabeçalho), tray_icon.png (bandeja)
 datas = []
-for name in ('siga_new_logo.png', 'OG Meu Atendimento Virtual (4).png'):
+for name in ('logo.png', 'tray_icon.png'):
     path = os.path.join(spec_dir, name)
     if os.path.isfile(path):
         datas.append((path, '.'))

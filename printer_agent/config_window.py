@@ -24,8 +24,11 @@ PAD_X = 12
 PAD_Y = 8
 
 
+LOGO_FILE = "logo.png"
+
+
 def _logo_path() -> str:
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "siga_new_logo.png")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), LOGO_FILE)
 
 
 def _label(parent: ttk.Frame, text: str, row: int) -> None:

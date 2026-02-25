@@ -30,8 +30,11 @@ STATUS_LABELS = {
 TRAY_ICON_SIZE = 64
 
 
+TRAY_ICON_FILE = "tray_icon.png"
+
+
 def _tray_icon_path() -> str:
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "OG Meu Atendimento Virtual (4).png")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), TRAY_ICON_FILE)
 
 
 def _create_icon_image(color: str) -> Image.Image:
