@@ -1,10 +1,16 @@
 """
 Serviço de impressão: descoberta de impressoras Windows e impressão via ESC/POS.
+Suporta dois modelos de comprovante: padrão e clássico térmico (80mm).
 """
 
 import logging
+import config
 from escpos.printer import Win32Raw
-from ticket_formatter import format_ticket, validate_print_data
+from ticket_formatter import (
+    format_ticket,
+    format_ticket_thermal_classic,
+    validate_print_data,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +41,7 @@ def _get_printer(printer_name: str) -> Win32Raw:
 def print_ticket(printer_name: str, data: dict) -> tuple[bool, str]:
     """
     Imprime um ticket na impressora especificada.
+    Usa o modelo de comprovante configurado (padrão ou clássico térmico).
 
     Returns:
         (success, message)
@@ -43,6 +50,12 @@ def print_ticket(printer_name: str, data: dict) -> tuple[bool, str]:
     if not valid:
         logger.warning("Dados de impressão inválidos: %s", error)
         return False, error
+
+    cfg = config.load_config()
+    receipt_model = cfg.get("receipt_model", "default")
+
+    if receipt_model == "thermal_classic":
+        return format_ticket_thermal_classic(printer_name, data)
 
     try:
         printer = _get_printer(printer_name)

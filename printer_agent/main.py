@@ -8,11 +8,20 @@ Threading model:
   - Background thread 2: asyncio event loop (WebSocket client)
 """
 
+import os
 import sys
 import asyncio
 import logging
 import threading
 import tkinter as tk
+
+# PyInstaller onefile: apontar escpos para capabilities.json no bundle (antes de importar printer_service)
+if getattr(sys, "frozen", False):
+    bundle_dir = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    os.environ.setdefault(
+        "ESCPOS_CAPABILITIES_FILE",
+        os.path.join(bundle_dir, "escpos", "capabilities.json"),
+    )
 
 import config
 import printer_service
@@ -65,10 +74,14 @@ class PrinterAgent:
         tray_thread.start()
 
         # Auto-connect
-        if self._config.get("auto_connect", True) and config.get_auth_token(self._config):
+        if (
+            self._config.get("auto_connect", True)
+            and config.get_ws_url(self._config).strip()
+            and config.get_auth_token(self._config).strip()
+        ):
             self._schedule_connect()
         else:
-            logger.info("Nenhum token configurado — abra as configurações pelo ícone na bandeja")
+            logger.info("URL e/ou token não configurados — abra as configurações pelo ícone na bandeja")
 
         # Main thread: tkinter (hidden root)
         self._tk_root = tk.Tk()
@@ -93,12 +106,17 @@ class PrinterAgent:
         if self._ws_client:
             await self._ws_client.stop()
 
-        ws_url = config.get_ws_url(self._config)
-        auth_token = config.get_auth_token(self._config)
+        ws_url = config.get_ws_url(self._config).strip()
+        auth_token = config.get_auth_token(self._config).strip()
         printer_name = self._config.get("printer_name", "")
 
         if not ws_url or not auth_token:
-            logger.warning("URL ou token não configurados — abra as configurações")
+            missing = []
+            if not ws_url:
+                missing.append("URL")
+            if not auth_token:
+                missing.append("token")
+            logger.warning("%s não configurado(s) — abra as configurações", " e ".join(missing))
             self._set_status("disconnected")
             return
 
@@ -127,7 +145,14 @@ class PrinterAgent:
         self._status = status
         if self._tray:
             self._tray.set_status(status)
+        if self._tk_root:
+            self._tk_root.after(0, lambda s=status: self._sync_config_status(s))
         logger.info("Status: %s", status)
+
+    def _sync_config_status(self, status: str) -> None:
+        """Atualiza o status na janela de configuração se estiver aberta (chamado na thread tk)."""
+        if ConfigWindow._instance is not None:
+            ConfigWindow._instance.update_status(status)
 
     # -- Config window (scheduled on tkinter main thread) --
 
@@ -189,7 +214,11 @@ class PrinterAgent:
 
 def main():
     agent = PrinterAgent()
-    agent.run()
+    try:
+        agent.run()
+    except KeyboardInterrupt:
+        logger.info("Interrompido pelo usuário (Ctrl+C)")
+        agent._request_exit()
 
 
 if __name__ == "__main__":

@@ -23,6 +23,30 @@ Aplicativo para Windows que recebe comandos do servidor Meu Atendimento e imprim
    python main.py
    ```
 
+   **Modo desenvolvimento** (reinicia sozinho ao salvar código):
+   ```
+   python dev.py
+   ```
+   O agente será reiniciado automaticamente sempre que você salvar um arquivo `.py`.
+
+### Gerar o executável (printer_agent.exe)
+
+1. Abra o terminal na pasta `printer_agent`.
+2. Execute (no **PowerShell** use `.\` antes do script):
+   ```
+   .\build_exe.bat
+   ```
+   ou no CMD:
+   ```
+   build_exe.bat
+   ```
+   Ou manualmente:
+   ```
+   pip install -r requirements.txt
+   pyinstaller printer_agent.spec
+   ```
+3. O executável será criado em `printer_agent\dist\printer_agent.exe`.
+
 ## Como configurar
 
 Ao executar, o agente aparece como um ícone na **bandeja do sistema** (perto do relógio do Windows).

@@ -9,6 +9,7 @@ from typing import Callable, Optional
 
 import websockets
 from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed
 
 import printer_service
 
@@ -40,6 +41,7 @@ class PrinterWebSocketClient:
         self._backoff = 1
         self._max_backoff = 30
         self._ws = None
+        self._authenticated = False
 
     async def start(self) -> None:
         self._running = True
@@ -48,6 +50,36 @@ class PrinterWebSocketClient:
                 await self._connect_and_listen()
             except asyncio.CancelledError:
                 break
+            except ConnectionClosed as e:
+                if e.code == 1011 and not self._authenticated:
+                    reason = ""
+                    if getattr(e, "rcvd", None) and getattr(e.rcvd, "reason", None):
+                        reason = (e.rcvd.reason or "").strip()
+                    if not reason:
+                        reason = (getattr(e, "reason", None) or "").strip()
+                    extra = f" Motivo do servidor: {reason}." if reason else ""
+                    message = (
+                        "Conexão encerrada pelo servidor durante autenticação (1011). "
+                        "Verifique URL/token ou o backend." + extra
+                    )
+                    logger.error(message)
+                    self._running = False
+                    if self._on_auth_failed:
+                        self._on_auth_failed(message)
+                    self._notify_disconnected()
+                    break
+                if e.code == 1011:
+                    logger.warning(
+                        "Servidor encerrou conexão com erro interno (1011). "
+                        "Verifique backend, URL configurada e token."
+                    )
+                else:
+                    logger.warning("Conexão WebSocket encerrada (código %s): %s", e.code, e)
+                self._notify_disconnected()
+                if self._running:
+                    logger.info("Reconectando em %ds...", self._backoff)
+                    await asyncio.sleep(self._backoff)
+                    self._backoff = min(self._backoff * 2, self._max_backoff)
             except Exception as e:
                 logger.warning("Conexão perdida: %s", e)
                 self._notify_disconnected()
@@ -62,6 +94,7 @@ class PrinterWebSocketClient:
             await self._ws.close()
 
     async def _connect_and_listen(self) -> None:
+        self._authenticated = False
         async with connect(
             self.ws_url,
             max_size=MAX_MESSAGE_SIZE,
@@ -91,6 +124,7 @@ class PrinterWebSocketClient:
                 raise ConnectionError(f"Resposta inesperada: {auth_msg.get('type')}")
 
             # Autenticado com sucesso
+            self._authenticated = True
             logger.info("Conectado e autenticado em %s", self.ws_url)
             self._backoff = 1  # Reset backoff
             self._notify_connected()

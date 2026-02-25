@@ -34,12 +34,18 @@ ENVIRONMENT_LABELS = {
     "custom": "Personalizado",
 }
 
+RECEIPT_MODEL_LABELS = {
+    "default": "Modelo reduzido",
+    "thermal_classic": "Modelo destaque",
+}
+
 DEFAULT_CONFIG = {
     "environment": "producao_br",
     "server_url": "",
     "auth_token_encrypted": "",
     "printer_name": "",
     "auto_connect": True,
+    "receipt_model": "default",
 }
 
 

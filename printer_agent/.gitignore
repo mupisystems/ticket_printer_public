@@ -1,0 +1,21 @@
+# Build e executável
+build/
+dist/
+*.exe
+*.spec.bak
+
+# Pasta de debug (imagens de teste do ticket)
+ticket/
+
+# Config local (opcional; descomente se não quiser versionar)
+# printer_config.json
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

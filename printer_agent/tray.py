@@ -1,8 +1,9 @@
 """
-System tray icon com indicação de status e menu de contexto.
+System tray icon com logo e menu de contexto.
 """
 
 import logging
+import os
 from typing import Callable, Optional
 
 import pystray
@@ -10,11 +11,14 @@ from PIL import Image, ImageDraw
 
 logger = logging.getLogger(__name__)
 
-# Cores de status para o ícone
+# Cor principal da marca
+PRIMARY_COLOR = "#334398"
+
+# Cores de status (para fallback quando logo não existe)
 COLORS = {
-    "connected": "#22c55e",     # verde
-    "disconnected": "#ef4444",  # vermelho
-    "connecting": "#f59e0b",    # amarelo
+    "connected": "#22c55e",
+    "disconnected": "#ef4444",
+    "connecting": "#f59e0b",
 }
 
 STATUS_LABELS = {
@@ -23,10 +27,16 @@ STATUS_LABELS = {
     "connecting": "Conectando...",
 }
 
+TRAY_ICON_SIZE = 64
+
+
+def _tray_icon_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "OG Meu Atendimento Virtual (4).png")
+
 
 def _create_icon_image(color: str) -> Image.Image:
-    """Cria um ícone circular simples com a cor do status."""
-    size = 64
+    """Cria um ícone circular com a cor (fallback quando não há logo)."""
+    size = TRAY_ICON_SIZE
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     margin = 4
@@ -37,6 +47,19 @@ def _create_icon_image(color: str) -> Image.Image:
         width=2,
     )
     return img
+
+
+def _load_tray_icon() -> Image.Image:
+    """Carrega o ícone para a bandeja; se não existir, usa ícone na cor principal."""
+    path = _tray_icon_path()
+    if os.path.isfile(path):
+        try:
+            img = Image.open(path).convert("RGBA")
+            img = img.resize((TRAY_ICON_SIZE, TRAY_ICON_SIZE), Image.Resampling.LANCZOS)
+            return img
+        except Exception as e:
+            logger.warning("Não foi possível carregar o logo da bandeja: %s", e)
+    return _create_icon_image(PRIMARY_COLOR)
 
 
 class TrayIcon:
@@ -70,11 +93,11 @@ class TrayIcon:
         )
 
     def start(self) -> None:
-        """Inicia o ícone na bandeja (bloqueia a thread)."""
+        """Inicia o ícone na bandeja (bloqueia a thread). Usa o logo quando disponível."""
         self._icon = pystray.Icon(
-            name="MeuAtendimento Printer",
-            icon=_create_icon_image(COLORS["disconnected"]),
-            title="Meu Atendimento - Impressão",
+            name="Impressão",
+            icon=_load_tray_icon(),
+            title="Impressão",
             menu=self._build_menu(),
         )
         self._icon.run()
@@ -86,9 +109,7 @@ class TrayIcon:
     def set_status(self, status: str) -> None:
         self._status = status
         if self._icon:
-            color = COLORS.get(status, COLORS["disconnected"])
-            self._icon.icon = _create_icon_image(color)
-            self._icon.title = f"Meu Atendimento - {STATUS_LABELS.get(status, status)}"
+            self._icon.title = f"Impressão — {STATUS_LABELS.get(status, status)}"
             self._icon.update_menu()
 
     def _handle_open_config(self, icon, item) -> None:

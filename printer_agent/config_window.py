@@ -1,9 +1,10 @@
 """
 Janela de configuração (tkinter) para o agente de impressão.
-Usa Toplevel vinculado ao root principal. Singleton.
+Layout moderno com logo e cor principal da marca.
 """
 
 import logging
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import Callable, Optional
@@ -12,6 +13,26 @@ import config
 import printer_service
 
 logger = logging.getLogger(__name__)
+
+# Cor principal da marca
+PRIMARY_COLOR = "#334398"
+PRIMARY_DARK = "#2a3780"
+BG_WINDOW = "#f5f5f5"
+BG_CARD = "#ffffff"
+LABEL_WIDTH_CHARS = 14
+PAD_X = 12
+PAD_Y = 8
+
+
+def _logo_path() -> str:
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "siga_new_logo.png")
+
+
+def _label(parent: ttk.Frame, text: str, row: int) -> None:
+    """Label alinhado com largura fixa para coluna 0."""
+    lbl = ttk.Label(parent, text=text)
+    lbl.grid(row=row, column=0, sticky="w", pady=(0, PAD_Y))
+    parent.columnconfigure(0, minsize=120)
 
 
 class ConfigWindow:
@@ -57,92 +78,123 @@ class ConfigWindow:
         self._config = current_config
 
         self._window = tk.Toplevel(tk_root)
-        self._window.title("Meu Atendimento - Configurações de Impressão")
+        self._window.title("Configurações de Impressão")
         self._window.resizable(False, False)
+        self._window.configure(bg=BG_WINDOW)
         self._window.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        self._logo_photo = None  # referência para o logo (evitar GC)
         self._build_ui(connection_status)
         self._load_values()
         self._window.focus_force()
 
     def _build_ui(self, connection_status: str) -> None:
-        main_frame = ttk.Frame(self._window, padding=20)
-        main_frame.grid(row=0, column=0, sticky="nsew")
+        # --- Cabeçalho com logo (fundo claro para o logo azul aparecer) ---
+        header = tk.Frame(self._window, bg=BG_CARD, height=64)
+        header.pack(fill=tk.X)
+        header.pack_propagate(False)
 
-        # Status da conexão
-        status_frame = ttk.LabelFrame(main_frame, text="Status", padding=10)
-        status_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        logo_path = _logo_path()
+        if os.path.isfile(logo_path):
+            try:
+                from PIL import Image, ImageTk
+                img = Image.open(logo_path).convert("RGBA")
+                h = 40
+                w = max(1, int(img.width * h / img.height))
+                img = img.resize((w, h), Image.Resampling.LANCZOS)
+                self._logo_photo = ImageTk.PhotoImage(img)
+                tk.Label(header, image=self._logo_photo, bg=BG_CARD).pack(side=tk.LEFT, padx=(20, 12), pady=12)
+            except Exception as e:
+                logger.debug("Logo não carregado: %s", e)
 
-        status_text = {"connected": "Conectado", "disconnected": "Desconectado", "connecting": "Conectando..."}.get(
-            connection_status, connection_status
-        )
-        status_color = {"connected": "green", "disconnected": "red", "connecting": "orange"}.get(
-            connection_status, "gray"
-        )
+        tk.Label(
+            header, text="Configurações de Impressão",
+            bg=BG_CARD, fg=PRIMARY_COLOR, font=("Segoe UI", 14, "bold")
+        ).pack(side=tk.LEFT, pady=16)
+
+        # --- Conteúdo ---
+        content = tk.Frame(self._window, bg=BG_WINDOW, padx=24, pady=20)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        # Estilo ttk (cor principal nos botões e seções)
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+            style.configure("TFrame", background=BG_WINDOW)
+            style.configure("TLabelframe", background=BG_CARD, padding=14)
+            style.configure("TLabelframe.Label", background=BG_CARD, foreground=PRIMARY_COLOR, font=("Segoe UI", 10, "bold"))
+            style.configure("TButton", background=PRIMARY_COLOR, foreground="white", padding=(12, 6))
+            style.map("TButton", background=[("active", PRIMARY_DARK)])
+        except tk.TclError:
+            pass
+
+        # Status
+        status_frame = ttk.LabelFrame(content, text="Status", padding=10)
+        status_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        status_text = {"connected": "Conectado", "disconnected": "Desconectado", "connecting": "Conectando..."}.get(connection_status, connection_status)
+        status_color = {"connected": "#16a34a", "disconnected": "#dc2626", "connecting": "#ea580c"}.get(connection_status, "#64748b")
         self._status_label = tk.Label(
-            status_frame, text=f"  {status_text}", fg=status_color, font=("Arial", 11, "bold")
+            status_frame, text=f"  {status_text}", fg=status_color, font=("Segoe UI", 11, "bold"),
+            bg=BG_CARD
         )
         self._status_label.grid(row=0, column=0, sticky="w")
 
-        # Ambiente
-        env_frame = ttk.LabelFrame(main_frame, text="Servidor", padding=10)
-        env_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-
-        ttk.Label(env_frame, text="Ambiente:").grid(row=0, column=0, sticky="w", pady=2)
+        # Servidor
+        env_frame = ttk.LabelFrame(content, text="Servidor", padding=14)
+        env_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        _label(env_frame, "Ambiente:", 0)
         self._env_var = tk.StringVar()
         env_labels = list(config.ENVIRONMENT_LABELS.values())
-        self._env_combo = ttk.Combobox(
-            env_frame, textvariable=self._env_var, values=env_labels, state="readonly", width=30
-        )
-        self._env_combo.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=2)
+        self._env_combo = ttk.Combobox(env_frame, textvariable=self._env_var, values=env_labels, state="readonly", width=32)
+        self._env_combo.grid(row=0, column=1, sticky="ew", padx=(PAD_X, 0), pady=(0, PAD_Y))
         self._env_combo.bind("<<ComboboxSelected>>", self._on_env_change)
-
-        ttk.Label(env_frame, text="URL do servidor:").grid(row=1, column=0, sticky="w", pady=2)
+        _label(env_frame, "URL do servidor:", 1)
         self._url_var = tk.StringVar()
-        self._url_entry = ttk.Entry(env_frame, textvariable=self._url_var, width=40)
-        self._url_entry.grid(row=1, column=1, sticky="ew", padx=(10, 0), pady=2)
+        self._url_entry = ttk.Entry(env_frame, textvariable=self._url_var, width=42)
+        self._url_entry.grid(row=1, column=1, sticky="ew", padx=(PAD_X, 0), pady=(0, PAD_Y))
 
-        # Token
-        auth_frame = ttk.LabelFrame(main_frame, text="Autenticação", padding=10)
-        auth_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-
-        ttk.Label(auth_frame, text="Token:").grid(row=0, column=0, sticky="w", pady=2)
+        # Autenticação
+        auth_frame = ttk.LabelFrame(content, text="Autenticação", padding=14)
+        auth_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        _label(auth_frame, "Token:", 0)
         self._token_var = tk.StringVar()
-        self._token_entry = ttk.Entry(auth_frame, textvariable=self._token_var, show="*", width=40)
-        self._token_entry.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=2)
-
+        self._token_entry = ttk.Entry(auth_frame, textvariable=self._token_var, show="*", width=42)
+        self._token_entry.grid(row=0, column=1, sticky="ew", padx=(PAD_X, 0), pady=(0, PAD_Y))
         self._show_token_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            auth_frame, text="Mostrar token", variable=self._show_token_var, command=self._toggle_token
-        ).grid(row=1, column=1, sticky="w", padx=(10, 0))
+        ttk.Checkbutton(auth_frame, text="Mostrar token", variable=self._show_token_var, command=self._toggle_token).grid(row=1, column=1, sticky="w", padx=(PAD_X, 0))
+
+        # Modelo de comprovante
+        receipt_frame = ttk.LabelFrame(content, text="Modelo de comprovante", padding=14)
+        receipt_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        _label(receipt_frame, "Layout:", 0)
+        self._receipt_model_var = tk.StringVar()
+        receipt_labels = list(config.RECEIPT_MODEL_LABELS.values())
+        self._receipt_combo = ttk.Combobox(receipt_frame, textvariable=self._receipt_model_var, values=receipt_labels, state="readonly", width=38)
+        self._receipt_combo.grid(row=0, column=1, sticky="ew", padx=(PAD_X, 0), pady=(0, PAD_Y))
 
         # Impressora
-        printer_frame = ttk.LabelFrame(main_frame, text="Impressora", padding=10)
-        printer_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-
-        ttk.Label(printer_frame, text="Impressora:").grid(row=0, column=0, sticky="w", pady=2)
+        printer_frame = ttk.LabelFrame(content, text="Impressora", padding=14)
+        printer_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        _label(printer_frame, "Impressora:", 0)
         self._printer_var = tk.StringVar()
-        self._printer_combo = ttk.Combobox(
-            printer_frame, textvariable=self._printer_var, width=35
-        )
-        self._printer_combo.grid(row=0, column=1, sticky="ew", padx=(10, 0), pady=2)
-        ttk.Button(printer_frame, text="Atualizar", command=self._refresh_printers, width=10).grid(
-            row=0, column=2, padx=(5, 0), pady=2
-        )
+        self._printer_combo = ttk.Combobox(printer_frame, textvariable=self._printer_var, width=35)
+        self._printer_combo.grid(row=0, column=1, sticky="ew", padx=(PAD_X, 0), pady=(0, PAD_Y))
+        ttk.Button(printer_frame, text="Atualizar", command=self._refresh_printers, width=10).grid(row=0, column=2, padx=(8, 0), pady=(0, PAD_Y))
 
         # Auto-connect
         self._auto_connect_var = tk.BooleanVar()
-        ttk.Checkbutton(main_frame, text="Conectar automaticamente ao iniciar", variable=self._auto_connect_var).grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(0, 10)
-        )
+        ttk.Checkbutton(content, text="Conectar automaticamente ao iniciar", variable=self._auto_connect_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 16))
 
-        # Botões
-        btn_frame = ttk.Frame(main_frame)
-        btn_frame.grid(row=5, column=0, columnspan=2, sticky="ew")
+        # Botões (estilo primário)
+        btn_frame = tk.Frame(content, bg=BG_WINDOW)
+        btn_frame.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        ttk.Button(btn_frame, text="Salvar", command=self._save).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btn_frame, text="Testar Impressão", command=self._test_print).pack(side=tk.LEFT, padx=4)
+        ttk.Button(btn_frame, text="Testar Conexão", command=self._test_connection).pack(side=tk.LEFT, padx=4)
 
-        ttk.Button(btn_frame, text="Salvar", command=self._save).grid(row=0, column=0, padx=(0, 5))
-        ttk.Button(btn_frame, text="Testar Impressão", command=self._test_print).grid(row=0, column=1, padx=5)
-        ttk.Button(btn_frame, text="Testar Conexão", command=self._test_connection).grid(row=0, column=2, padx=5)
+        content.columnconfigure(1, weight=1)
+        for f in (status_frame, env_frame, auth_frame, receipt_frame, printer_frame):
+            f.columnconfigure(1, weight=1)
 
     def _load_values(self) -> None:
         env_key = self._config.get("environment", "producao_br")
@@ -160,6 +212,11 @@ class ConfigWindow:
         printer_name = self._config.get("printer_name", "")
         if printer_name:
             self._printer_var.set(printer_name)
+
+        receipt_model = self._config.get("receipt_model", "default")
+        self._receipt_model_var.set(
+            config.RECEIPT_MODEL_LABELS.get(receipt_model, config.RECEIPT_MODEL_LABELS["default"])
+        )
 
         self._auto_connect_var.set(self._config.get("auto_connect", True))
 
@@ -182,6 +239,12 @@ class ConfigWindow:
                 return key
         return "producao_br"
 
+    def _receipt_key_from_label(self, label: str) -> str:
+        for key, lbl in config.RECEIPT_MODEL_LABELS.items():
+            if lbl == label:
+                return key
+        return "default"
+
     def _toggle_token(self) -> None:
         self._token_entry.configure(show="" if self._show_token_var.get() else "*")
 
@@ -200,6 +263,7 @@ class ConfigWindow:
         new_config["server_url"] = self._url_var.get().strip()
         new_config["printer_name"] = self._printer_var.get().strip()
         new_config["auto_connect"] = self._auto_connect_var.get()
+        new_config["receipt_model"] = self._receipt_key_from_label(self._receipt_model_var.get())
         config.set_auth_token(new_config, self._token_var.get().strip())
         config.save_config(new_config)
         self._config = new_config
@@ -226,6 +290,11 @@ class ConfigWindow:
     def _test_connection(self) -> None:
         if self._on_test_connection:
             self._on_test_connection()
+            messagebox.showinfo(
+                "Testar Conexão",
+                "Tentando conectar ao servidor. O status acima será atualizado em instantes.",
+                parent=self._window,
+            )
         else:
             messagebox.showinfo("Conexão", "Função de teste de conexão não configurada.", parent=self._window)
 
@@ -237,7 +306,7 @@ class ConfigWindow:
         status_text = {"connected": "Conectado", "disconnected": "Desconectado", "connecting": "Conectando..."}.get(
             status, status
         )
-        status_color = {"connected": "green", "disconnected": "red", "connecting": "orange"}.get(status, "gray")
+        status_color = {"connected": "#16a34a", "disconnected": "#dc2626", "connecting": "#ea580c"}.get(status, "#64748b")
         try:
             self._status_label.configure(text=f"  {status_text}", fg=status_color)
         except tk.TclError:
