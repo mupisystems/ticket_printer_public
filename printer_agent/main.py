@@ -15,6 +15,14 @@ import logging
 import threading
 import tkinter as tk
 
+if os.name == "nt":
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("meuatendimento.printer_agent")
+    except Exception:
+        pass
+
 # PyInstaller onefile: apontar escpos para capabilities.json no bundle (antes de importar printer_service)
 if getattr(sys, "frozen", False):
     bundle_dir = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
@@ -86,6 +94,8 @@ class PrinterAgent:
         # Main thread: tkinter (hidden root)
         self._tk_root = tk.Tk()
         self._tk_root.withdraw()
+        # Ao iniciar o app, abre a janela de configuração por padrão.
+        self._tk_root.after(0, self._open_config)
         self._tk_root.mainloop()  # Blocks here — handles config window events
 
     # -- Async loop --

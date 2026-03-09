@@ -5,6 +5,7 @@ Layout moderno com logo e cor principal da marca.
 
 import logging
 import os
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import Callable, Optional
@@ -22,13 +23,28 @@ BG_CARD = "#ffffff"
 LABEL_WIDTH_CHARS = 14
 PAD_X = 12
 PAD_Y = 8
+AUTO_SAVE_DEBOUNCE_MS = 800
+DISCONNECTED_STATUS_TEXT = "Desconectado - Verifique o ambiente e o token"
 
 
 LOGO_FILE = "logo.png"
+WINDOW_ICON_FILE = "app.ico"
+TRAY_ICON_FILE = "tray_icon.png"
 
 
 def _logo_path() -> str:
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), LOGO_FILE)
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_dir, LOGO_FILE)
+
+
+def _window_icon_path() -> str:
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_dir, WINDOW_ICON_FILE)
+
+
+def _tray_icon_path() -> str:
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_dir, TRAY_ICON_FILE)
 
 
 def _label(parent: ttk.Frame, text: str, row: int) -> None:
@@ -87,9 +103,32 @@ class ConfigWindow:
         self._window.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._logo_photo = None  # referência para o logo (evitar GC)
+        self._window_icon_photo = None
+        self._auto_save_after_id: Optional[str] = None
+        self._auto_save_suspended = True
+        self._apply_window_icon()
         self._build_ui(connection_status)
         self._load_values()
+        self._bind_auto_save_handlers()
+        self._auto_save_suspended = False
         self._window.focus_force()
+
+    def _apply_window_icon(self) -> None:
+        icon_path = _window_icon_path()
+        if os.path.isfile(icon_path):
+            try:
+                self._window.iconbitmap(icon_path)
+                return
+            except tk.TclError:
+                pass
+
+        tray_icon_path = _tray_icon_path()
+        if os.path.isfile(tray_icon_path):
+            try:
+                self._window_icon_photo = tk.PhotoImage(file=tray_icon_path)
+                self._window.iconphoto(True, self._window_icon_photo)
+            except tk.TclError:
+                pass
 
     def _build_ui(self, connection_status: str) -> None:
         # --- Cabeçalho com logo (fundo claro para o logo azul aparecer) ---
@@ -134,7 +173,11 @@ class ConfigWindow:
         # Status
         status_frame = ttk.LabelFrame(content, text="Status", padding=10)
         status_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
-        status_text = {"connected": "Conectado", "disconnected": "Desconectado", "connecting": "Conectando..."}.get(connection_status, connection_status)
+        status_text = {
+            "connected": "Conectado",
+            "disconnected": DISCONNECTED_STATUS_TEXT,
+            "connecting": "Conectando...",
+        }.get(connection_status, connection_status)
         status_color = {"connected": "#16a34a", "disconnected": "#dc2626", "connecting": "#ea580c"}.get(connection_status, "#64748b")
         self._status_label = tk.Label(
             status_frame, text=f"  {status_text}", fg=status_color, font=("Segoe UI", 11, "bold"),
@@ -226,6 +269,33 @@ class ConfigWindow:
     def _on_env_change(self, event=None) -> None:
         self._update_url_state()
 
+    def _bind_auto_save_handlers(self) -> None:
+        # Dispara auto-save para mudanças de configuração com debounce.
+        tracked_vars = [
+            self._env_var,
+            self._url_var,
+            self._token_var,
+            self._printer_var,
+            self._receipt_model_var,
+            self._auto_connect_var,
+        ]
+        for var in tracked_vars:
+            var.trace_add("write", self._on_setting_changed)
+
+    def _on_setting_changed(self, *_args) -> None:
+        self._schedule_auto_save()
+
+    def _schedule_auto_save(self) -> None:
+        if self._auto_save_suspended:
+            return
+        if self._auto_save_after_id is not None:
+            self._window.after_cancel(self._auto_save_after_id)
+        self._auto_save_after_id = self._window.after(AUTO_SAVE_DEBOUNCE_MS, self._run_auto_save)
+
+    def _run_auto_save(self) -> None:
+        self._auto_save_after_id = None
+        self._save(show_feedback=False)
+
     def _update_url_state(self) -> None:
         label = self._env_var.get()
         is_custom = label == config.ENVIRONMENT_LABELS.get("custom", "Personalizado")
@@ -257,7 +327,11 @@ class ConfigWindow:
         if printers and not self._printer_var.get():
             self._printer_var.set(printers[0])
 
-    def _save(self) -> None:
+    def _save(self, show_feedback: bool = True) -> None:
+        if self._auto_save_after_id is not None:
+            self._window.after_cancel(self._auto_save_after_id)
+            self._auto_save_after_id = None
+
         env_label = self._env_var.get()
         env_key = self._label_to_key(env_label)
 
@@ -268,13 +342,18 @@ class ConfigWindow:
         new_config["auto_connect"] = self._auto_connect_var.get()
         new_config["receipt_model"] = self._receipt_key_from_label(self._receipt_model_var.get())
         config.set_auth_token(new_config, self._token_var.get().strip())
+
+        if new_config == self._config:
+            return
+
         config.save_config(new_config)
         self._config = new_config
 
         if self._on_save:
             self._on_save(new_config)
 
-        messagebox.showinfo("Configurações", "Configurações salvas com sucesso!", parent=self._window)
+        if show_feedback:
+            messagebox.showinfo("Configurações", "Configurações salvas com sucesso!", parent=self._window)
 
     def _test_print(self) -> None:
         printer_name = self._printer_var.get().strip()
@@ -302,11 +381,18 @@ class ConfigWindow:
             messagebox.showinfo("Conexão", "Função de teste de conexão não configurada.", parent=self._window)
 
     def _on_close(self) -> None:
+        if self._auto_save_after_id is not None:
+            self._window.after_cancel(self._auto_save_after_id)
+            self._auto_save_after_id = None
         ConfigWindow._instance = None
         self._window.destroy()
 
     def update_status(self, status: str) -> None:
-        status_text = {"connected": "Conectado", "disconnected": "Desconectado", "connecting": "Conectando..."}.get(
+        status_text = {
+            "connected": "Conectado",
+            "disconnected": DISCONNECTED_STATUS_TEXT,
+            "connecting": "Conectando...",
+        }.get(
             status, status
         )
         status_color = {"connected": "#16a34a", "disconnected": "#dc2626", "connecting": "#ea580c"}.get(status, "#64748b")

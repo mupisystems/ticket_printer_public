@@ -8,9 +8,9 @@ Aplicativo para Windows que recebe comandos do servidor Meu Atendimento e imprim
 
 ### Executável (recomendado)
 
-1. Baixe `printer_agent.exe` (pasta [releases](.) ou gere com o build abaixo).
+1. Baixe `App de Impressão.exe` (pasta [releases](.) ou gere com o build abaixo).
 2. Copie para uma pasta no totem (ex: `C:\MeuAtendimento\`).
-3. Execute `printer_agent.exe`.
+3. Execute `App de Impressão.exe`.
 
 ### Python (desenvolvimento)
 
@@ -41,7 +41,7 @@ pip install -r requirements.txt
 pyinstaller printer_agent.spec
 ```
 
-O exe será gerado em `dist\printer_agent.exe`.
+O exe será gerado em `dist\App de Impressão.exe`.
 
 **Arquivos ignorados no build:** `build/`, `dist/`, `*.exe` (veja `.gitignore`). Após o build, pode apagar a pasta `build\` para liberar espaço.
 
@@ -53,6 +53,7 @@ Coloque na pasta `printer_agent`:
 
 | Arquivo           | Uso                                |
 |-------------------|------------------------------------|
+| `app.ico`         | Ícone do executável (opcional). Se não existir, o build gera a partir de `tray_icon.png` |
 | `tray_icon.png`   | Ícone na bandeja do sistema        |
 | `logo.png`        | Logo no cabeçalho da janela de configuração |
 
