@@ -45,6 +45,7 @@ DEFAULT_CONFIG = {
     "auth_token_encrypted": "",
     "printer_name": "",
     "auto_connect": True,
+    "start_with_windows": True,
     "receipt_model": "default",
 }
 

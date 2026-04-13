@@ -14,6 +14,9 @@ import asyncio
 import logging
 import threading
 import tkinter as tk
+import msvcrt
+import socket
+from contextlib import closing
 
 # PyInstaller onefile: apontar escpos para capabilities.json no bundle (antes de importar printer_service)
 if getattr(sys, "frozen", False):
@@ -25,6 +28,7 @@ if getattr(sys, "frozen", False):
 
 import config
 import printer_service
+import windows_startup
 from websocket_client import PrinterWebSocketClient
 from tray import TrayIcon
 from config_window import ConfigWindow
@@ -36,6 +40,89 @@ logging.basicConfig(
 )
 logger = logging.getLogger("printer_agent")
 
+ACTIVATION_HOST = "127.0.0.1"
+ACTIVATION_PORT = 52379
+ACTIVATION_TOKEN = b"OPEN_CONFIG"
+
+
+class SingleInstanceLock:
+    """Trava simples por arquivo para garantir apenas uma instância do agente."""
+
+    def __init__(self, lock_file: str):
+        self._lock_file = lock_file
+        self._fh = None
+
+    def acquire(self) -> bool:
+        os.makedirs(os.path.dirname(self._lock_file), exist_ok=True)
+        self._fh = open(self._lock_file, "a+")
+        try:
+            self._fh.seek(0)
+            msvcrt.locking(self._fh.fileno(), msvcrt.LK_NBLCK, 1)
+            self._fh.seek(0)
+            self._fh.write(str(os.getpid()))
+            self._fh.flush()
+            return True
+        except OSError:
+            return False
+
+    def release(self) -> None:
+        if not self._fh:
+            return
+        try:
+            self._fh.seek(0)
+            msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        try:
+            self._fh.close()
+        except OSError:
+            pass
+        self._fh = None
+
+
+class ActivationServer:
+    """Servidor local para receber sinal de ativacao da segunda execucao."""
+
+    def __init__(self, on_activate):
+        self._on_activate = on_activate
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        # Desbloqueia accept() com conexao local curta.
+        try:
+            with closing(socket.create_connection((ACTIVATION_HOST, ACTIVATION_PORT), timeout=0.2)):
+                pass
+        except OSError:
+            pass
+
+    def _serve(self) -> None:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind((ACTIVATION_HOST, ACTIVATION_PORT))
+            server.listen(2)
+            server.settimeout(0.5)
+            while not self._stop_event.is_set():
+                try:
+                    conn, _ = server.accept()
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+
+                with conn:
+                    try:
+                        payload = conn.recv(64)
+                    except OSError:
+                        continue
+                    if payload == ACTIVATION_TOKEN:
+                        self._on_activate()
+
 
 class PrinterAgent:
     def __init__(self):
@@ -45,8 +132,23 @@ class PrinterAgent:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._tk_root: tk.Tk | None = None
         self._status = "disconnected"
+        self._activation_server: ActivationServer | None = None
+        self._pending_open_config = False
 
-    def run(self) -> None:
+    def sync_windows_startup(self) -> None:
+        desired = bool(self._config.get("start_with_windows", True))
+        current = windows_startup.is_enabled()
+        if desired and not getattr(sys, "frozen", False) and not current:
+            return
+        if desired == current:
+            return
+        ok, msg = windows_startup.set_enabled(desired)
+        if ok:
+            logger.info(msg)
+        else:
+            logger.warning(msg)
+
+    def run(self, open_config_on_start: bool = False) -> None:
         print()
         print("=============================================")
         print("  Meu Atendimento - Agente de Impressão v2")
@@ -58,6 +160,9 @@ class PrinterAgent:
         print("  Pressione Ctrl+C para encerrar.")
         print("=============================================")
         print()
+
+        self._activation_server = ActivationServer(self._request_open_config)
+        self._activation_server.start()
 
         # Thread 2: asyncio event loop
         ws_thread = threading.Thread(target=self._run_async_loop, daemon=True)
@@ -86,6 +191,9 @@ class PrinterAgent:
         # Main thread: tkinter (hidden root)
         self._tk_root = tk.Tk()
         self._tk_root.withdraw()
+        if open_config_on_start or self._pending_open_config:
+            self._pending_open_config = False
+            self._tk_root.after(0, self._open_config)
         self._tk_root.mainloop()  # Blocks here — handles config window events
 
     # -- Async loop --
@@ -160,6 +268,8 @@ class PrinterAgent:
         """Chamado da thread do tray — agenda abertura na thread do tkinter."""
         if self._tk_root:
             self._tk_root.after(0, self._open_config)
+            return
+        self._pending_open_config = True
 
     def _open_config(self) -> None:
         """Executa na thread principal do tkinter."""
@@ -175,6 +285,7 @@ class PrinterAgent:
     def _on_config_saved(self, new_config: dict) -> None:
         self._config = new_config
         logger.info("Configuração atualizada")
+        self.sync_windows_startup()
         self._reconnect()
 
     def _on_test_print_from_config(self, printer_name: str) -> None:
@@ -206,19 +317,43 @@ class PrinterAgent:
                 pass
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._activation_server:
+            self._activation_server.stop()
         if self._tray:
             self._tray.stop()
         if self._tk_root:
             self._tk_root.after(0, self._tk_root.quit)
 
 
+def _notify_running_instance_open_config() -> bool:
+    try:
+        with closing(socket.create_connection((ACTIVATION_HOST, ACTIVATION_PORT), timeout=0.4)) as conn:
+            conn.sendall(ACTIVATION_TOKEN)
+        return True
+    except OSError:
+        return False
+
+
 def main():
+    args = {arg.lower() for arg in sys.argv[1:]}
+    background_mode = "--background" in args
+
+    lock_path = os.path.join(config.get_config_dir(), "printer_agent.lock")
+    instance_lock = SingleInstanceLock(lock_path)
+    if not instance_lock.acquire():
+        if not background_mode:
+            _notify_running_instance_open_config()
+        return
+
     agent = PrinterAgent()
     try:
-        agent.run()
+        agent.sync_windows_startup()
+        agent.run(open_config_on_start=not background_mode)
     except KeyboardInterrupt:
         logger.info("Interrompido pelo usuário (Ctrl+C)")
         agent._request_exit()
+    finally:
+        instance_lock.release()
 
 
 if __name__ == "__main__":
