@@ -25,10 +25,20 @@ PAD_Y = 8
 
 
 LOGO_FILE = "logo.png"
+WINDOW_ICON_CANDIDATES = ("tray_icon.png", "logo.png")
 
 
 def _logo_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), LOGO_FILE)
+
+
+def _window_icon_path() -> str | None:
+    base = os.path.dirname(os.path.abspath(__file__))
+    for name in WINDOW_ICON_CANDIDATES:
+        path = os.path.join(base, name)
+        if os.path.isfile(path):
+            return path
+    return None
 
 
 def _label(parent: ttk.Frame, text: str, row: int) -> None:
@@ -87,9 +97,26 @@ class ConfigWindow:
         self._window.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._logo_photo = None  # referência para o logo (evitar GC)
+        self._window_icon_photo = None  # referência do ícone da janela (evitar GC)
+        self._apply_window_icon()
         self._build_ui(connection_status)
         self._load_values()
         self._window.focus_force()
+
+    def _apply_window_icon(self) -> None:
+        """Aplica ícone da janela para evitar o ícone padrão do tkinter na barra."""
+        icon_path = _window_icon_path()
+        if not icon_path:
+            return
+        try:
+            from PIL import Image, ImageTk
+
+            img = Image.open(icon_path).convert("RGBA")
+            img = img.resize((32, 32), Image.Resampling.LANCZOS)
+            self._window_icon_photo = ImageTk.PhotoImage(img)
+            self._window.iconphoto(True, self._window_icon_photo)
+        except Exception as e:
+            logger.debug("Falha ao aplicar ícone da janela: %s", e)
 
     def _build_ui(self, connection_status: str) -> None:
         # --- Cabeçalho com logo (fundo claro para o logo azul aparecer) ---
@@ -188,9 +215,17 @@ class ConfigWindow:
         self._auto_connect_var = tk.BooleanVar()
         ttk.Checkbutton(content, text="Conectar automaticamente ao iniciar", variable=self._auto_connect_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 16))
 
+        # Auto-start with Windows
+        self._start_with_windows_var = tk.BooleanVar()
+        ttk.Checkbutton(
+            content,
+            text="Iniciar automaticamente com o Windows",
+            variable=self._start_with_windows_var,
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 16))
+
         # Botões (estilo primário)
         btn_frame = tk.Frame(content, bg=BG_WINDOW)
-        btn_frame.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        btn_frame.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 4))
         ttk.Button(btn_frame, text="Salvar", command=self._save).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_frame, text="Testar Impressão", command=self._test_print).pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_frame, text="Testar Conexão", command=self._test_connection).pack(side=tk.LEFT, padx=4)
@@ -222,6 +257,7 @@ class ConfigWindow:
         )
 
         self._auto_connect_var.set(self._config.get("auto_connect", True))
+        self._start_with_windows_var.set(self._config.get("start_with_windows", True))
 
     def _on_env_change(self, event=None) -> None:
         self._update_url_state()
@@ -266,6 +302,7 @@ class ConfigWindow:
         new_config["server_url"] = self._url_var.get().strip()
         new_config["printer_name"] = self._printer_var.get().strip()
         new_config["auto_connect"] = self._auto_connect_var.get()
+        new_config["start_with_windows"] = self._start_with_windows_var.get()
         new_config["receipt_model"] = self._receipt_key_from_label(self._receipt_model_var.get())
         config.set_auth_token(new_config, self._token_var.get().strip())
         config.save_config(new_config)
