@@ -29,7 +29,7 @@ ENVIRONMENTS = {
 ENVIRONMENT_LABELS = {
     "localhost": "Localhost",
     "homologacao": "Homologação",
-    "producao_br": "Produção - MeuAtendimentoVirtual",
+    "producao_br": "Produção - Meu Atendimento Virtual",
     "producao_us": "Produção - Awaitra.com",
     "custom": "Personalizado",
 }

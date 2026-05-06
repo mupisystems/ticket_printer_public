@@ -10,6 +10,9 @@ ticket/
 # Config local (opcional; descomente se não quiser versionar)
 # printer_config.json
 
+# Claude Code (memória local, não versionar)
+.claude/
+
 # IDE / editor
 .idea/
 .vscode/

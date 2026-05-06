@@ -78,6 +78,8 @@ class TrayIcon:
         self._on_test_print = on_test_print
         self._on_exit = on_exit
         self._status = "disconnected"
+        self._printer_ready: Optional[bool] = None  # None = desconhecido
+        self._printer_name: str = ""
         self._icon: Optional[pystray.Icon] = None
 
     def _build_menu(self) -> pystray.Menu:
@@ -112,8 +114,34 @@ class TrayIcon:
     def set_status(self, status: str) -> None:
         self._status = status
         if self._icon:
-            self._icon.title = f"Impressão — {STATUS_LABELS.get(status, status)}"
+            self._update_title()
             self._icon.update_menu()
+
+    def set_printer_status(self, is_ready: bool, printer_name: str = "") -> None:
+        """Atualiza o status da impressora no tooltip da bandeja."""
+        self._printer_ready = is_ready
+        if printer_name:
+            self._printer_name = printer_name
+        if self._icon:
+            self._update_title()
+
+    def notify(self, title: str, message: str) -> None:
+        """Exibe notificação balloon no sistema Windows."""
+        if self._icon:
+            try:
+                self._icon.notify(message, title)
+            except Exception as e:
+                logger.warning("Notificação balloon falhou: %s", e)
+
+    def _update_title(self) -> None:
+        ws = STATUS_LABELS.get(self._status, self._status)
+        if self._printer_name and self._printer_ready is not None:
+            p = "impressora pronta" if self._printer_ready else "impressora offline"
+            title = f"Impressão — {ws} · {p}"
+        else:
+            title = f"Impressão — {ws}"
+        if self._icon:
+            self._icon.title = title
 
     def _handle_open_config(self, icon, item) -> None:
         if self._on_open_config:

@@ -29,6 +29,7 @@ class PrinterWebSocketClient:
         on_disconnected: Optional[Callable] = None,
         on_error: Optional[Callable[[str], None]] = None,
         on_auth_failed: Optional[Callable[[str], None]] = None,
+        on_print_result: Optional[Callable[[str, bool, str], None]] = None,
     ):
         self.ws_url = ws_url
         self.auth_token = auth_token
@@ -37,6 +38,7 @@ class PrinterWebSocketClient:
         self._on_disconnected = on_disconnected
         self._on_error = on_error
         self._on_auth_failed = on_auth_failed
+        self._on_print_result = on_print_result
         self._running = False
         self._backoff = 1
         self._max_backoff = 30
@@ -165,6 +167,8 @@ class PrinterWebSocketClient:
 
         status = "success" if success else "error"
         await self._send_result(job_id, status, message)
+        if self._on_print_result:
+            self._on_print_result(job_id, success, message)
 
     async def _send_result(self, job_id: str, status: str, message: str) -> None:
         response = {

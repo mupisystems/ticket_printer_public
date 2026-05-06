@@ -1,6 +1,5 @@
 """
-Janela de configuração (tkinter) para o agente de impressão.
-Layout moderno com logo e cor principal da marca.
+Janela de configuração moderna - Meu Atendimento Virtual / Agente de Impressão
 """
 
 import logging
@@ -14,42 +13,134 @@ import printer_service
 
 logger = logging.getLogger(__name__)
 
-# Cor principal da marca
-PRIMARY_COLOR = "#334398"
-PRIMARY_DARK = "#2a3780"
-BG_WINDOW = "#f5f5f5"
-BG_CARD = "#ffffff"
-LABEL_WIDTH_CHARS = 14
-PAD_X = 12
-PAD_Y = 8
+# ─── Paleta ──────────────────────────────────────────────────────────────────
+C_PRIMARY       = "#334398"
+C_PRIMARY_DARK  = "#243080"
+C_PRIMARY_LIGHT = "#eaedfa"
+C_BG            = "#f0f2f8"
+C_CARD          = "#ffffff"
+C_SHADOW        = "#c8d2e8"
+C_BORDER        = "#dde3f0"
+C_INPUT_BG      = "#f5f7fc"
+C_TEXT          = "#1e2a4a"
+C_MUTED         = "#6b7a99"
+C_SUCCESS       = "#16a34a"
+C_ERROR         = "#dc2626"
+C_WARNING       = "#d97706"
 
+# ─── Tipografia ───────────────────────────────────────────────────────────────
+F_HERO    = ("Clash Grotesk", 15, "bold")
+F_SUB     = ("Inter", 8)
+F_SECTION = ("Clash Grotesk", 9, "bold")
+F_LABEL   = ("Inter", 9)
+F_INPUT   = ("Inter", 10)
+F_STATUS  = ("Inter", 10, "bold")
+F_BTN_LG  = ("Inter", 10, "bold")
+F_BTN_SM  = ("Inter", 9, "bold")
 
-LOGO_FILE = "logo.png"
+LOGO_FILE              = "logo.png"
 WINDOW_ICON_CANDIDATES = ("tray_icon.png", "logo.png")
 
 
-def _logo_path() -> str:
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), LOGO_FILE)
+# ─── Utilidades ───────────────────────────────────────────────────────────────
+
+def _base_dir() -> str:
+    return os.path.dirname(os.path.abspath(__file__))
 
 
-def _window_icon_path() -> str | None:
-    base = os.path.dirname(os.path.abspath(__file__))
-    for name in WINDOW_ICON_CANDIDATES:
-        path = os.path.join(base, name)
-        if os.path.isfile(path):
-            return path
-    return None
+def _safe_bg(widget) -> str:
+    try:
+        return widget.cget("bg")
+    except Exception:
+        return C_BG
 
 
-def _label(parent: ttk.Frame, text: str, row: int) -> None:
-    """Label alinhado com largura fixa para coluna 0."""
-    lbl = ttk.Label(parent, text=text)
-    lbl.grid(row=row, column=0, sticky="w", pady=(0, PAD_Y))
-    parent.columnconfigure(0, minsize=120)
+def _rr(c: tk.Canvas, x1: int, y1: int, x2: int, y2: int, r: int = 6, **kw):
+    """Retângulo com cantos arredondados via polígono suave."""
+    pts = [
+        x1 + r, y1, x2 - r, y1,
+        x2, y1, x2, y1 + r,
+        x2, y2 - r, x2, y2,
+        x2 - r, y2, x1 + r, y2,
+        x1, y2, x1, y2 - r,
+        x1, y1 + r, x1, y1,
+    ]
+    return c.create_polygon(pts, smooth=True, **kw)
 
+
+def _card_frames(parent: tk.Widget):
+    """Retorna (outer_to_pack, inner_for_children) simulando card com sombra."""
+    outer = tk.Frame(parent, bg=C_SHADOW)
+    inner = tk.Frame(outer, bg=C_CARD)
+    inner.pack(fill=tk.BOTH, expand=True, padx=(0, 2), pady=(0, 2))
+    return outer, inner
+
+
+# ─── Widgets customizados ─────────────────────────────────────────────────────
+
+class _Btn(tk.Canvas):
+    """Botão primário com fundo sólido e efeito hover."""
+
+    def __init__(self, parent, text: str, cmd=None,
+                 bg: str = C_PRIMARY, hv: str = C_PRIMARY_DARK, fg: str = "#ffffff",
+                 w: int = 110, h: int = 34, r: int = 6, font=F_BTN_LG, **kw):
+        super().__init__(parent, width=w, height=h, bg=_safe_bg(parent),
+                         highlightthickness=0, cursor="hand2", **kw)
+        self._text, self._cmd = text, cmd
+        self._bg, self._hv, self._fg = bg, hv, fg
+        # Nota: self._w é reservado pelo tkinter — usar _bw/_bh para largura/altura
+        self._bw, self._bh, self._br, self._bfont = w, h, r, font
+        self._draw(bg)
+        self.bind("<Enter>",           lambda e: self._draw(hv))
+        self.bind("<Leave>",           lambda e: self._draw(bg))
+        self.bind("<ButtonRelease-1>", self._click)
+
+    def _draw(self, color: str):
+        self.delete("all")
+        _rr(self, 1, 1, self._bw - 1, self._bh - 1, self._br, fill=color, outline=color)
+        self.create_text(self._bw // 2, self._bh // 2,
+                         text=self._text, fill=self._fg, font=self._bfont)
+
+    def _click(self, _):
+        self._draw(self._bg)
+        if self._cmd:
+            self._cmd()
+
+
+class _OBtn(tk.Canvas):
+    """Botão outline (ghost) — fundo branco com borda colorida."""
+
+    def __init__(self, parent, text: str, cmd=None,
+                 color: str = C_PRIMARY, w: int = 110, h: int = 32, r: int = 6, **kw):
+        super().__init__(parent, width=w, height=h, bg=_safe_bg(parent),
+                         highlightthickness=0, cursor="hand2", **kw)
+        self._text, self._cmd, self._color = text, cmd, color
+        self._bw, self._bh, self._br = w, h, r
+        self._draw(False)
+        self.bind("<Enter>",           lambda e: self._draw(True))
+        self.bind("<Leave>",           lambda e: self._draw(False))
+        self.bind("<ButtonRelease-1>", self._click)
+
+    def _draw(self, hover: bool):
+        self.delete("all")
+        _rr(self, 1, 1, self._bw - 1, self._bh - 1, self._br,
+            fill=self._color if hover else "#ffffff",
+            outline=self._color)
+        self.create_text(self._bw // 2, self._bh // 2,
+                         text=self._text,
+                         fill="#ffffff" if hover else self._color,
+                         font=F_BTN_SM)
+
+    def _click(self, _):
+        self._draw(False)
+        if self._cmd:
+            self._cmd()
+
+
+# ─── Janela principal ─────────────────────────────────────────────────────────
 
 class ConfigWindow:
-    """Janela de configuração como Toplevel. Singleton gerenciado externamente."""
+    """Janela de configuração. Singleton gerenciado externamente."""
 
     _instance: Optional["ConfigWindow"] = None
 
@@ -63,7 +154,6 @@ class ConfigWindow:
         on_test_connection: Optional[Callable] = None,
         connection_status: str = "disconnected",
     ) -> None:
-        """Abre ou foca a janela (deve ser chamado da thread principal do tkinter)."""
         if cls._instance is not None:
             try:
                 cls._instance._window.lift()
@@ -71,9 +161,9 @@ class ConfigWindow:
                 return
             except tk.TclError:
                 cls._instance = None
-
         cls._instance = cls(
-            tk_root, current_config, on_save, on_test_print, on_test_connection, connection_status
+            tk_root, current_config, on_save,
+            on_test_print, on_test_connection, connection_status,
         )
 
     def __init__(
@@ -89,177 +179,336 @@ class ConfigWindow:
         self._on_test_print = on_test_print
         self._on_test_connection = on_test_connection
         self._config = current_config
+        self._logo_photo = None
+        self._icon_photo = None
 
         self._window = tk.Toplevel(tk_root)
-        self._window.title("Configurações de Impressão")
-        self._window.resizable(False, False)
-        self._window.configure(bg=BG_WINDOW)
-        self._window.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._window.title("Configurações · Agente de Impressão")
+        self._window.resizable(False, True)
+        self._window.configure(bg=C_BG)
+        self._window.protocol("WM_DELETE_WINDOW", self._close)
 
-        self._logo_photo = None  # referência para o logo (evitar GC)
-        self._window_icon_photo = None  # referência do ícone da janela (evitar GC)
-        self._apply_window_icon()
-        self._build_ui(connection_status)
-        self._load_values()
+        self._apply_icon()
+        self._build(connection_status)
+        self._load()
+
+        # Centraliza na tela; limita altura à tela disponível
+        self._window.update_idletasks()
+        self._bind_mousewheel()
+
+        w  = 490
+        sh = self._window.winfo_screenheight()
+        sw = self._window.winfo_screenwidth()
+        # Altura ideal = partes fixas (header+status+footer) + conteúdo rolável
+        content_h = self._scroll_inner.winfo_reqheight()
+        fixed_h   = self._window.winfo_reqheight() - self._scroll_outer.winfo_reqheight()
+        ideal_h   = fixed_h + content_h
+        h = max(420, min(ideal_h, sh - 80))
+        self._window.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
         self._window.focus_force()
 
-    def _apply_window_icon(self) -> None:
-        """Aplica ícone da janela para evitar o ícone padrão do tkinter na barra."""
-        icon_path = _window_icon_path()
-        if not icon_path:
-            return
-        try:
-            from PIL import Image, ImageTk
+    # ── Ícone da janela ───────────────────────────────────────────────────────
 
-            img = Image.open(icon_path).convert("RGBA")
-            img = img.resize((32, 32), Image.Resampling.LANCZOS)
-            self._window_icon_photo = ImageTk.PhotoImage(img)
-            self._window.iconphoto(True, self._window_icon_photo)
-        except Exception as e:
-            logger.debug("Falha ao aplicar ícone da janela: %s", e)
+    def _apply_icon(self) -> None:
+        base = _base_dir()
+        for name in WINDOW_ICON_CANDIDATES:
+            path = os.path.join(base, name)
+            if os.path.isfile(path):
+                try:
+                    from PIL import Image, ImageTk
+                    img = Image.open(path).convert("RGBA").resize(
+                        (32, 32), Image.Resampling.LANCZOS
+                    )
+                    self._icon_photo = ImageTk.PhotoImage(img)
+                    self._window.iconphoto(True, self._icon_photo)
+                    return
+                except Exception as e:
+                    logger.debug("Ícone da janela: %s", e)
 
-    def _build_ui(self, connection_status: str) -> None:
-        # --- Cabeçalho com logo (fundo claro para o logo azul aparecer) ---
-        header = tk.Frame(self._window, bg=BG_CARD, height=64)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
+    # ── Construção da UI ──────────────────────────────────────────────────────
 
-        logo_path = _logo_path()
+    def _build(self, status: str) -> None:
+        self._build_header()
+        self._build_status(status)
+        self._build_footer()           # reserva espaço no bottom ANTES do canvas expandir
+        self._build_scrollable_content()
+
+    def _build_scrollable_content(self) -> None:
+        self._scroll_outer = tk.Frame(self._window, bg=C_BG)
+        self._scroll_outer.pack(fill=tk.BOTH, expand=True)
+
+        self._canvas = tk.Canvas(self._scroll_outer, bg=C_BG, highlightthickness=0, bd=0)
+        vscroll = ttk.Scrollbar(self._scroll_outer, orient="vertical", command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=vscroll.set)
+
+        vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._scroll_inner = tk.Frame(self._canvas, bg=C_BG)
+        self._cw_id = self._canvas.create_window((0, 0), window=self._scroll_inner, anchor="nw")
+
+        self._scroll_inner.bind("<Configure>", lambda e: self._canvas.configure(
+            scrollregion=self._canvas.bbox("all")
+        ))
+        self._canvas.bind("<Configure>", lambda e: self._canvas.itemconfig(
+            self._cw_id, width=e.width
+        ))
+
+        self._build_content(self._scroll_inner)
+
+    def _on_mousewheel(self, event: tk.Event) -> None:
+        self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _bind_mousewheel(self) -> None:
+        """Liga roda do mouse em todos os widgets da área rolável."""
+        self._canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self._recursive_bind(self._scroll_inner)
+
+    def _recursive_bind(self, widget: tk.Widget) -> None:
+        widget.bind("<MouseWheel>", self._on_mousewheel)
+        for child in widget.winfo_children():
+            self._recursive_bind(child)
+
+    def _build_header(self) -> None:
+        hdr = tk.Frame(self._window, bg=C_CARD)
+        hdr.pack(fill=tk.X)
+
+        inner = tk.Frame(hdr, bg=C_CARD)
+        inner.pack(fill=tk.X, padx=20, pady=14)
+
+        logo_path = os.path.join(_base_dir(), LOGO_FILE)
         if os.path.isfile(logo_path):
             try:
                 from PIL import Image, ImageTk
                 img = Image.open(logo_path).convert("RGBA")
-                h = 40
-                w = max(1, int(img.width * h / img.height))
-                img = img.resize((w, h), Image.Resampling.LANCZOS)
+                lh = 36
+                lw = max(1, int(img.width * lh / img.height))
+                img = img.resize((lw, lh), Image.Resampling.LANCZOS)
                 self._logo_photo = ImageTk.PhotoImage(img)
-                tk.Label(header, image=self._logo_photo, bg=BG_CARD).pack(side=tk.LEFT, padx=(20, 12), pady=12)
+                tk.Label(inner, image=self._logo_photo, bg=C_CARD).pack(
+                    side=tk.LEFT, padx=(0, 16)
+                )
             except Exception as e:
-                logger.debug("Logo não carregado: %s", e)
+                logger.debug("Logo: %s", e)
 
-        tk.Label(
-            header, text="Configurações de Impressão",
-            bg=BG_CARD, fg=PRIMARY_COLOR, font=("Segoe UI", 14, "bold")
-        ).pack(side=tk.LEFT, pady=16)
+        info = tk.Frame(inner, bg=C_CARD)
+        info.pack(side=tk.LEFT, anchor="center")
+        tk.Label(info, text="Configurações", bg=C_CARD, fg=C_PRIMARY,
+                 font=F_HERO).pack(anchor="w")
+        tk.Label(info, text="Agente de Impressão · Meu Atendimento Virtual",
+                 bg=C_CARD, fg=C_MUTED, font=F_SUB).pack(anchor="w")
 
-        # --- Conteúdo ---
-        content = tk.Frame(self._window, bg=BG_WINDOW, padx=24, pady=20)
-        content.pack(fill=tk.BOTH, expand=True)
+    def _build_status(self, status: str) -> None:
+        wrap = tk.Frame(self._window, bg=C_BG)
+        wrap.pack(fill=tk.X, padx=16, pady=(12, 0))
 
-        # Estilo ttk (cor principal nos botões e seções)
+        outer, card = _card_frames(wrap)
+        outer.pack(fill=tk.X)
+
+        row = tk.Frame(card, bg=C_CARD)
+        row.pack(fill=tk.X, padx=14, pady=10)
+
+        self._dot = tk.Canvas(row, width=10, height=10,
+                              bg=C_CARD, highlightthickness=0)
+        self._dot.pack(side=tk.LEFT, pady=1)
+
+        self._status_lbl = tk.Label(row, bg=C_CARD, font=F_STATUS)
+        self._status_lbl.pack(side=tk.LEFT, padx=(8, 0))
+
+        tk.Label(row, text="status da conexão", bg=C_CARD,
+                 fg=C_MUTED, font=F_SUB).pack(side=tk.RIGHT)
+
+        self._render_status(status)
+
+    def _build_content(self, parent: tk.Widget) -> None:
+        wrap = tk.Frame(parent, bg=C_BG)
+        wrap.pack(fill=tk.BOTH, padx=16, pady=12)
+
+        # Servidor
+        outer, srv = self._section_card(wrap, "SERVIDOR")
+        outer.pack(fill=tk.X, pady=(0, 10))
+        self._env_var = tk.StringVar()
+        self._env_combo = self._combo_row(srv, "Ambiente", self._env_var,
+                                          list(config.ENVIRONMENT_LABELS.values()))
+        self._env_combo.bind("<<ComboboxSelected>>", self._on_env_change)
+        self._url_var = tk.StringVar()
+        self._url_entry = self._entry_row(srv, "URL do servidor", self._url_var)
+        tk.Frame(srv, bg=C_CARD, height=8).pack()
+
+        # Autenticação
+        outer, auth = self._section_card(wrap, "AUTENTICAÇÃO")
+        outer.pack(fill=tk.X, pady=(0, 10))
+        self._token_var = tk.StringVar()
+        self._token_entry = self._entry_row(auth, "Token de acesso", self._token_var, show="*")
+        self._show_token_var = tk.BooleanVar(value=False)
+        show_row = tk.Frame(auth, bg=C_CARD)
+        show_row.pack(fill=tk.X, padx=14, pady=(4, 10))
+        tk.Checkbutton(
+            show_row, text="Mostrar token", variable=self._show_token_var,
+            command=self._toggle_token, bg=C_CARD, fg=C_MUTED, font=F_SUB,
+            activebackground=C_CARD, bd=0, cursor="hand2", highlightthickness=0,
+        ).pack(anchor="e")
+
+        # Impressora
+        outer, prn = self._section_card(wrap, "IMPRESSORA")
+        outer.pack(fill=tk.X, pady=(0, 10))
+        self._printer_var = tk.StringVar()
+        self._printer_combo = self._combo_row(prn, "Dispositivo", self._printer_var, [])
+        self._printer_combo.configure(state="normal")
+        rrow = tk.Frame(prn, bg=C_CARD)
+        rrow.pack(fill=tk.X, padx=14, pady=(6, 10))
+        _OBtn(rrow, "↺  Atualizar lista", self._refresh_printers,
+              color=C_MUTED, w=142, h=26).pack(side=tk.RIGHT)
+
+        # Comprovante
+        outer, rec = self._section_card(wrap, "COMPROVANTE")
+        outer.pack(fill=tk.X, pady=(0, 10))
+        self._receipt_model_var = tk.StringVar()
+        self._receipt_combo = self._combo_row(rec, "Modelo de layout", self._receipt_model_var,
+                                              list(config.RECEIPT_MODEL_LABELS.values()))
+        tk.Frame(rec, bg=C_CARD, height=8).pack()
+
+        # Opções
+        outer, opt = self._section_card(wrap, "OPÇÕES")
+        outer.pack(fill=tk.X)
+        self._auto_connect_var = tk.BooleanVar()
+        self._start_windows_var = tk.BooleanVar()
+        for var, label in (
+            (self._auto_connect_var,  "Conectar automaticamente ao iniciar"),
+            (self._start_windows_var, "Iniciar com o Windows automaticamente"),
+        ):
+            r = tk.Frame(opt, bg=C_CARD)
+            r.pack(fill=tk.X, padx=14, pady=(8, 0))
+            tk.Checkbutton(
+                r, text=label, variable=var, bg=C_CARD, fg=C_TEXT,
+                font=F_LABEL, bd=0, cursor="hand2",
+                activebackground=C_CARD, highlightthickness=0,
+            ).pack(anchor="w")
+        tk.Frame(opt, bg=C_CARD, height=10).pack()
+
+    def _build_footer(self) -> None:
+        # side=BOTTOM garante que o footer sempre fica visível,
+        # mesmo quando o canvas com expand=True toma o restante do espaço.
+        footer = tk.Frame(self._window, bg=C_CARD)
+        footer.pack(side=tk.BOTTOM, fill=tk.X)
+        tk.Frame(self._window, bg=C_BORDER, height=1).pack(side=tk.BOTTOM, fill=tk.X)
+
+        row = tk.Frame(footer, bg=C_CARD)
+        row.pack(fill=tk.X, padx=16, pady=12)
+
+        # Esquerda: logs
+        _OBtn(row, "Exibir Logs", self._open_logs, color=C_MUTED, w=90, h=34).pack(side=tk.LEFT)
+
+        # Direita: ações (empacotado em ordem inversa para pack(side=RIGHT))
+        _Btn( row, "Salvar",           self._save,            w=82,  h=34).pack(side=tk.RIGHT)
+        _OBtn(row, "Testar Impressão", self._test_print,      w=122, h=34).pack(side=tk.RIGHT, padx=(0, 6))
+        _OBtn(row, "Testar Conexão",   self._test_connection, w=116, h=34).pack(side=tk.RIGHT, padx=(0, 6))
+
+    def _open_logs(self) -> None:
+        LogsWindow.show(self._window)
+
+    # ── Helpers de layout ─────────────────────────────────────────────────────
+
+    def _section_card(self, parent: tk.Widget, title: str):
+        """Retorna (outer_to_pack, card_frame) com strip de título."""
+        outer, card = _card_frames(parent)
+
+        strip = tk.Frame(card, bg=C_PRIMARY_LIGHT)
+        strip.pack(fill=tk.X)
+        tk.Label(strip, text=title, bg=C_PRIMARY_LIGHT, fg=C_PRIMARY,
+                 font=F_SECTION, padx=14, pady=6).pack(side=tk.LEFT)
+
+        return outer, card
+
+    def _combo_row(self, card: tk.Widget, label: str,
+                   var: tk.StringVar, values: list) -> ttk.Combobox:
+        row = tk.Frame(card, bg=C_CARD)
+        row.pack(fill=tk.X, padx=14, pady=(10, 0))
+
+        tk.Label(row, text=label, bg=C_CARD, fg=C_MUTED,
+                 font=F_LABEL, width=16, anchor="w").pack(side=tk.LEFT)
+
         style = ttk.Style()
+        style.configure("Mod.TCombobox", padding=(6, 4))
+        combo = ttk.Combobox(row, textvariable=var, values=values,
+                             state="readonly", width=26, font=F_INPUT,
+                             style="Mod.TCombobox")
+        combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+        return combo
+
+    def _entry_row(self, card: tk.Widget, label: str,
+                   var: tk.StringVar, show: str = "") -> tk.Entry:
+        row = tk.Frame(card, bg=C_CARD)
+        row.pack(fill=tk.X, padx=14, pady=(10, 0))
+
+        tk.Label(row, text=label, bg=C_CARD, fg=C_MUTED,
+                 font=F_LABEL, width=16, anchor="w").pack(side=tk.LEFT)
+
+        # Border frame simulates input border with focus highlight
+        border = tk.Frame(row, bg=C_BORDER, padx=1, pady=1)
+        border.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+        ef = tk.Frame(border, bg=C_INPUT_BG)
+        ef.pack(fill=tk.X)
+
+        entry = tk.Entry(ef, textvariable=var, bg=C_INPUT_BG, fg=C_TEXT,
+                         font=F_INPUT, bd=0, highlightthickness=0,
+                         insertbackground=C_PRIMARY)
+        if show:
+            entry.configure(show=show)
+        entry.pack(fill=tk.X, padx=8, pady=5)
+
+        entry.bind("<FocusIn>",  lambda e: border.configure(bg=C_PRIMARY))
+        entry.bind("<FocusOut>", lambda e: border.configure(bg=C_BORDER))
+        return entry
+
+    # ── Status ────────────────────────────────────────────────────────────────
+
+    def _render_status(self, status: str) -> None:
+        colors = {
+            "connected":    C_SUCCESS,
+            "disconnected": C_ERROR,
+            "connecting":   C_WARNING,
+        }
+        labels = {
+            "connected":    "Conectado",
+            "disconnected": "Desconectado",
+            "connecting":   "Conectando...",
+        }
+        c = colors.get(status, "#94a3b8")
+        self._dot.delete("all")
+        self._dot.create_oval(1, 1, 9, 9, fill=c, outline=c)
+        self._status_lbl.configure(text=labels.get(status, status), fg=c)
+
+    def update_status(self, status: str) -> None:
         try:
-            style.theme_use("clam")
-            style.configure("TFrame", background=BG_WINDOW)
-            style.configure("TLabelframe", background=BG_CARD, padding=14)
-            style.configure("TLabelframe.Label", background=BG_CARD, foreground=PRIMARY_COLOR, font=("Segoe UI", 10, "bold"))
-            style.configure("TButton", background=PRIMARY_COLOR, foreground="white", padding=(12, 6))
-            style.map("TButton", background=[("active", PRIMARY_DARK)])
+            self._render_status(status)
         except tk.TclError:
             pass
 
-        # Status
-        status_frame = ttk.LabelFrame(content, text="Status", padding=10)
-        status_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
-        status_text = {"connected": "Conectado", "disconnected": "Desconectado", "connecting": "Conectando..."}.get(connection_status, connection_status)
-        status_color = {"connected": "#16a34a", "disconnected": "#dc2626", "connecting": "#ea580c"}.get(connection_status, "#64748b")
-        self._status_label = tk.Label(
-            status_frame, text=f"  {status_text}", fg=status_color, font=("Segoe UI", 11, "bold"),
-            bg=BG_CARD
-        )
-        self._status_label.grid(row=0, column=0, sticky="w")
+    # ── Lógica de formulário ──────────────────────────────────────────────────
 
-        # Servidor
-        env_frame = ttk.LabelFrame(content, text="Servidor", padding=14)
-        env_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 12))
-        _label(env_frame, "Ambiente:", 0)
-        self._env_var = tk.StringVar()
-        env_labels = list(config.ENVIRONMENT_LABELS.values())
-        self._env_combo = ttk.Combobox(env_frame, textvariable=self._env_var, values=env_labels, state="readonly", width=32)
-        self._env_combo.grid(row=0, column=1, sticky="ew", padx=(PAD_X, 0), pady=(0, PAD_Y))
-        self._env_combo.bind("<<ComboboxSelected>>", self._on_env_change)
-        _label(env_frame, "URL do servidor:", 1)
-        self._url_var = tk.StringVar()
-        self._url_entry = ttk.Entry(env_frame, textvariable=self._url_var, width=42)
-        self._url_entry.grid(row=1, column=1, sticky="ew", padx=(PAD_X, 0), pady=(0, PAD_Y))
-
-        # Autenticação
-        auth_frame = ttk.LabelFrame(content, text="Autenticação", padding=14)
-        auth_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 12))
-        _label(auth_frame, "Token:", 0)
-        self._token_var = tk.StringVar()
-        self._token_entry = ttk.Entry(auth_frame, textvariable=self._token_var, show="*", width=42)
-        self._token_entry.grid(row=0, column=1, sticky="ew", padx=(PAD_X, 0), pady=(0, PAD_Y))
-        self._show_token_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(auth_frame, text="Mostrar token", variable=self._show_token_var, command=self._toggle_token).grid(row=1, column=1, sticky="w", padx=(PAD_X, 0))
-
-        # Modelo de comprovante
-        receipt_frame = ttk.LabelFrame(content, text="Modelo de comprovante", padding=14)
-        receipt_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 12))
-        _label(receipt_frame, "Layout:", 0)
-        self._receipt_model_var = tk.StringVar()
-        receipt_labels = list(config.RECEIPT_MODEL_LABELS.values())
-        self._receipt_combo = ttk.Combobox(receipt_frame, textvariable=self._receipt_model_var, values=receipt_labels, state="readonly", width=38)
-        self._receipt_combo.grid(row=0, column=1, sticky="ew", padx=(PAD_X, 0), pady=(0, PAD_Y))
-
-        # Impressora
-        printer_frame = ttk.LabelFrame(content, text="Impressora", padding=14)
-        printer_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 12))
-        _label(printer_frame, "Impressora:", 0)
-        self._printer_var = tk.StringVar()
-        self._printer_combo = ttk.Combobox(printer_frame, textvariable=self._printer_var, width=35)
-        self._printer_combo.grid(row=0, column=1, sticky="ew", padx=(PAD_X, 0), pady=(0, PAD_Y))
-        ttk.Button(printer_frame, text="Atualizar", command=self._refresh_printers, width=10).grid(row=0, column=2, padx=(8, 0), pady=(0, PAD_Y))
-
-        # Auto-connect
-        self._auto_connect_var = tk.BooleanVar()
-        ttk.Checkbutton(content, text="Conectar automaticamente ao iniciar", variable=self._auto_connect_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 16))
-
-        # Auto-start with Windows
-        self._start_with_windows_var = tk.BooleanVar()
-        ttk.Checkbutton(
-            content,
-            text="Iniciar automaticamente com o Windows",
-            variable=self._start_with_windows_var,
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 16))
-
-        # Botões (estilo primário)
-        btn_frame = tk.Frame(content, bg=BG_WINDOW)
-        btn_frame.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 4))
-        ttk.Button(btn_frame, text="Salvar", command=self._save).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(btn_frame, text="Testar Impressão", command=self._test_print).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="Testar Conexão", command=self._test_connection).pack(side=tk.LEFT, padx=4)
-
-        content.columnconfigure(1, weight=1)
-        for f in (status_frame, env_frame, auth_frame, receipt_frame, printer_frame):
-            f.columnconfigure(1, weight=1)
-
-    def _load_values(self) -> None:
+    def _load(self) -> None:
         env_key = self._config.get("environment", "producao_br")
-        env_label = config.ENVIRONMENT_LABELS.get(env_key, "Produção Brasil")
-        self._env_var.set(env_label)
-
-        url = self._config.get("server_url", "")
-        self._url_var.set(url)
+        self._env_var.set(config.ENVIRONMENT_LABELS.get(env_key, "Produção Brasil"))
+        self._url_var.set(self._config.get("server_url", ""))
         self._update_url_state()
 
-        token = config.get_auth_token(self._config)
-        self._token_var.set(token)
+        self._token_var.set(config.get_auth_token(self._config))
 
         self._refresh_printers()
-        printer_name = self._config.get("printer_name", "")
-        if printer_name:
-            self._printer_var.set(printer_name)
+        p = self._config.get("printer_name", "")
+        if p:
+            self._printer_var.set(p)
 
-        receipt_model = self._config.get("receipt_model", "default")
+        receipt = self._config.get("receipt_model", "default")
         self._receipt_model_var.set(
-            config.RECEIPT_MODEL_LABELS.get(receipt_model, config.RECEIPT_MODEL_LABELS["default"])
+            config.RECEIPT_MODEL_LABELS.get(receipt, config.RECEIPT_MODEL_LABELS["default"])
         )
-
         self._auto_connect_var.set(self._config.get("auto_connect", True))
-        self._start_with_windows_var.set(self._config.get("start_with_windows", True))
+        self._start_windows_var.set(self._config.get("start_with_windows", True))
 
-    def _on_env_change(self, event=None) -> None:
+    def _on_env_change(self, _=None) -> None:
         self._update_url_state()
 
     def _update_url_state(self) -> None:
@@ -267,21 +516,21 @@ class ConfigWindow:
         is_custom = label == config.ENVIRONMENT_LABELS.get("custom", "Personalizado")
         self._url_entry.configure(state="normal" if is_custom else "disabled")
         if not is_custom:
-            env_key = self._label_to_key(label)
-            url = config.ENVIRONMENTS.get(env_key, "")
+            key = self._label_to_key(label)
+            url = config.ENVIRONMENTS.get(key, "")
             if url:
                 self._url_var.set(url)
 
     def _label_to_key(self, label: str) -> str:
-        for key, lbl in config.ENVIRONMENT_LABELS.items():
-            if lbl == label:
-                return key
+        for k, v in config.ENVIRONMENT_LABELS.items():
+            if v == label:
+                return k
         return "producao_br"
 
     def _receipt_key_from_label(self, label: str) -> str:
-        for key, lbl in config.RECEIPT_MODEL_LABELS.items():
-            if lbl == label:
-                return key
+        for k, v in config.RECEIPT_MODEL_LABELS.items():
+            if v == label:
+                return k
         return "default"
 
     def _toggle_token(self) -> None:
@@ -295,59 +544,231 @@ class ConfigWindow:
 
     def _save(self) -> None:
         env_label = self._env_var.get()
-        env_key = self._label_to_key(env_label)
-
-        new_config = dict(self._config)
-        new_config["environment"] = env_key
-        new_config["server_url"] = self._url_var.get().strip()
-        new_config["printer_name"] = self._printer_var.get().strip()
-        new_config["auto_connect"] = self._auto_connect_var.get()
-        new_config["start_with_windows"] = self._start_with_windows_var.get()
-        new_config["receipt_model"] = self._receipt_key_from_label(self._receipt_model_var.get())
-        config.set_auth_token(new_config, self._token_var.get().strip())
-        config.save_config(new_config)
-        self._config = new_config
-
+        env_key   = self._label_to_key(env_label)
+        cfg = dict(self._config)
+        cfg["environment"]      = env_key
+        cfg["server_url"]       = self._url_var.get().strip()
+        cfg["printer_name"]     = self._printer_var.get().strip()
+        cfg["auto_connect"]     = self._auto_connect_var.get()
+        cfg["start_with_windows"] = self._start_windows_var.get()
+        cfg["receipt_model"]    = self._receipt_key_from_label(self._receipt_model_var.get())
+        config.set_auth_token(cfg, self._token_var.get().strip())
+        config.save_config(cfg)
+        self._config = cfg
         if self._on_save:
-            self._on_save(new_config)
-
-        messagebox.showinfo("Configurações", "Configurações salvas com sucesso!", parent=self._window)
+            self._on_save(cfg)
+        messagebox.showinfo(
+            "Configurações salvas",
+            "As configurações foram salvas com sucesso!",
+            parent=self._window,
+        )
 
     def _test_print(self) -> None:
-        printer_name = self._printer_var.get().strip()
-        if not printer_name:
+        if getattr(self, "_testing_print", False):
+            return
+        p = self._printer_var.get().strip()
+        if not p:
             messagebox.showwarning("Impressão", "Selecione uma impressora.", parent=self._window)
             return
-        if self._on_test_print:
-            self._on_test_print(printer_name)
-        else:
-            success, msg = printer_service.test_print(printer_name)
-            if success:
-                messagebox.showinfo("Impressão", msg, parent=self._window)
-            else:
-                messagebox.showerror("Impressão", msg, parent=self._window)
+
+        self._testing_print = True
+
+        def _run():
+            try:
+                if self._on_test_print:
+                    result = self._on_test_print(p)
+                    ok, msg = result if result is not None else (None, None)
+                else:
+                    ok, msg = printer_service.test_print(p)
+                if ok is not None:
+                    try:
+                        self._window.after(0, lambda o=ok, m=msg: (
+                            messagebox.showinfo("Impressão", m, parent=self._window) if o
+                            else messagebox.showerror("Impressão", m, parent=self._window)
+                        ))
+                    except tk.TclError:
+                        pass
+            except Exception as exc:
+                try:
+                    self._window.after(0, lambda e=str(exc):
+                        messagebox.showerror("Impressão", f"Erro: {e}", parent=self._window)
+                    )
+                except tk.TclError:
+                    pass
+            finally:
+                try:
+                    self._window.after(0, lambda: setattr(self, "_testing_print", False))
+                except tk.TclError:
+                    pass
+
+        import threading
+        threading.Thread(target=_run, daemon=True).start()
 
     def _test_connection(self) -> None:
         if self._on_test_connection:
             self._on_test_connection()
             messagebox.showinfo(
                 "Testar Conexão",
-                "Tentando conectar ao servidor. O status acima será atualizado em instantes.",
+                "Tentando conectar ao servidor.\nO status acima será atualizado em instantes.",
                 parent=self._window,
             )
         else:
-            messagebox.showinfo("Conexão", "Função de teste de conexão não configurada.", parent=self._window)
+            messagebox.showinfo("Conexão", "Função não configurada.", parent=self._window)
 
-    def _on_close(self) -> None:
+    def _close(self) -> None:
         ConfigWindow._instance = None
         self._window.destroy()
 
-    def update_status(self, status: str) -> None:
-        status_text = {"connected": "Conectado", "disconnected": "Desconectado", "connecting": "Conectando..."}.get(
-            status, status
+
+# ─── Janela de Logs ───────────────────────────────────────────────────────────
+
+class LogsWindow:
+    """Janela que exibe os logs do agente em tempo real."""
+
+    _instance: Optional["LogsWindow"] = None
+
+    @classmethod
+    def show(cls, parent: tk.Widget) -> None:
+        if cls._instance is not None:
+            try:
+                cls._instance._window.lift()
+                cls._instance._window.focus_force()
+                cls._instance._refresh()
+                return
+            except tk.TclError:
+                cls._instance = None
+        cls._instance = cls(parent)
+
+    def __init__(self, parent: tk.Widget):
+        self._window = tk.Toplevel(parent)
+        self._window.title("Logs · Agente de Impressão")
+        self._window.configure(bg=C_BG)
+        self._window.resizable(True, True)
+        self._window.protocol("WM_DELETE_WINDOW", self._close)
+
+        self._build()
+
+        self._window.update_idletasks()
+        w, h = 720, 520
+        sw = self._window.winfo_screenwidth()
+        sh = self._window.winfo_screenheight()
+        self._window.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+        self._window.focus_force()
+        self._refresh()
+        self._schedule_refresh()
+
+    def _build(self) -> None:
+        # Cabeçalho
+        hdr = tk.Frame(self._window, bg=C_PRIMARY)
+        hdr.pack(fill=tk.X)
+        inner = tk.Frame(hdr, bg=C_PRIMARY)
+        inner.pack(fill=tk.X, padx=20, pady=14)
+        tk.Label(inner, text="Logs do Sistema", bg=C_PRIMARY, fg="#ffffff",
+                 font=F_HERO).pack(anchor="w")
+        tk.Label(inner, text="Histórico de eventos e erros do agente",
+                 bg=C_PRIMARY, fg="#8ca0d0", font=F_SUB).pack(anchor="w")
+
+        # Área de texto
+        body = tk.Frame(self._window, bg=C_BG)
+        body.pack(fill=tk.BOTH, expand=True, padx=16, pady=12)
+
+        outer, card = _card_frames(body)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        text_frame = tk.Frame(card, bg="#1e2a4a")
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+
+        scrollbar_y = ttk.Scrollbar(text_frame, orient="vertical")
+        scrollbar_x = ttk.Scrollbar(text_frame, orient="horizontal")
+
+        self._text = tk.Text(
+            text_frame,
+            bg="#1e2a4a", fg="#e2e8f0",
+            font=("Consolas", 9),
+            wrap=tk.NONE,
+            bd=0, highlightthickness=0,
+            yscrollcommand=scrollbar_y.set,
+            xscrollcommand=scrollbar_x.set,
+            state="disabled",
+            selectbackground=C_PRIMARY,
         )
-        status_color = {"connected": "#16a34a", "disconnected": "#dc2626", "connecting": "#ea580c"}.get(status, "#64748b")
+        scrollbar_y.configure(command=self._text.yview)
+        scrollbar_x.configure(command=self._text.xview)
+
+        scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
+        scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
+        self._text.pack(fill=tk.BOTH, expand=True)
+
+        # Rodapé
+        tk.Frame(self._window, bg=C_BORDER, height=1).pack(fill=tk.X)
+        footer = tk.Frame(self._window, bg=C_CARD)
+        footer.pack(fill=tk.X)
+
+        self._count_lbl = tk.Label(footer, text="", bg=C_CARD, fg=C_MUTED, font=F_SUB)
+        self._count_lbl.pack(side=tk.LEFT, padx=16, pady=12)
+
+        btn_row = tk.Frame(footer, bg=C_CARD)
+        btn_row.pack(side=tk.RIGHT, padx=16, pady=12)
+        _OBtn(btn_row, "Limpar", self._clear, color=C_ERROR, w=80, h=34).pack(side=tk.LEFT, padx=(0, 6))
+        _OBtn(btn_row, "Atualizar", self._refresh, color=C_MUTED, w=90, h=34).pack(side=tk.LEFT, padx=(0, 6))
+        _Btn(btn_row, "Copiar Logs", self._copy, w=110, h=34).pack(side=tk.LEFT)
+
+    def _refresh(self) -> None:
         try:
-            self._status_label.configure(text=f"  {status_text}", fg=status_color)
+            import log_buffer
+            logs = log_buffer.buffer.get_logs()
+            self._text.configure(state="normal")
+            self._text.delete("1.0", tk.END)
+            if logs:
+                # Colorir linhas por nível
+                self._text.tag_configure("ERROR",   foreground="#f87171")
+                self._text.tag_configure("WARNING", foreground="#fbbf24")
+                self._text.tag_configure("INFO",    foreground="#86efac")
+                self._text.tag_configure("DEBUG",   foreground="#94a3b8")
+
+                for line in logs.splitlines():
+                    tag = "INFO"
+                    if "[ERROR   ]" in line or "[ERROR]" in line:
+                        tag = "ERROR"
+                    elif "[WARNING ]" in line or "[WARNING]" in line:
+                        tag = "WARNING"
+                    elif "[DEBUG   ]" in line or "[DEBUG]" in line:
+                        tag = "DEBUG"
+                    self._text.insert(tk.END, line + "\n", tag)
+
+                self._text.see(tk.END)
+                lines = logs.count("\n") + 1
+                self._count_lbl.configure(text=f"{lines} linha(s)")
+            else:
+                self._text.insert(tk.END, "Nenhum log registrado ainda.")
+                self._count_lbl.configure(text="0 linha(s)")
+            self._text.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _schedule_refresh(self) -> None:
+        try:
+            self._refresh()
+            self._window.after(2000, self._schedule_refresh)
         except tk.TclError:
             pass
+
+    def _copy(self) -> None:
+        try:
+            import log_buffer
+            logs = log_buffer.buffer.get_logs()
+            self._window.clipboard_clear()
+            self._window.clipboard_append(logs)
+            messagebox.showinfo("Logs", "Logs copiados para a área de transferência!", parent=self._window)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível copiar: {e}", parent=self._window)
+
+    def _clear(self) -> None:
+        if messagebox.askyesno("Limpar Logs", "Deseja limpar todos os logs?", parent=self._window):
+            import log_buffer
+            log_buffer.buffer.clear()
+            self._refresh()
+
+    def _close(self) -> None:
+        LogsWindow._instance = None
+        self._window.destroy()

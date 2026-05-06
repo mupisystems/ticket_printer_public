@@ -4,8 +4,37 @@
 
 import os
 
+
+def _resolve_windows_icon(spec_dir: str) -> str | None:
+    """Define o icone do .exe para aparecer no Explorer/atalhos do Windows."""
+    ico_candidates = ("printer_agent.ico", "tray_icon.ico", "logo.ico")
+    for name in ico_candidates:
+        path = os.path.join(spec_dir, name)
+        if os.path.isfile(path):
+            return path
+
+    png_candidates = ("tray_icon.png", "logo.png")
+    for name in png_candidates:
+        png_path = os.path.join(spec_dir, name)
+        if not os.path.isfile(png_path):
+            continue
+        try:
+            from PIL import Image
+
+            out_dir = os.path.join(spec_dir, "build")
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, "_generated_app_icon.ico")
+            img = Image.open(png_path).convert("RGBA")
+            img.save(out_path, format="ICO", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+            return out_path
+        except Exception:
+            return None
+
+    return None
+
 # PyInstaller define SPECPATH = pasta do .spec quando executa o spec
 spec_dir = SPECPATH
+exe_icon = _resolve_windows_icon(spec_dir)
 
 block_cipher = None
 
@@ -76,4 +105,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=exe_icon,
 )

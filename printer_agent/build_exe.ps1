@@ -6,9 +6,25 @@ Set-Location $PSScriptRoot
 Write-Host "Instalando dependencias se necessario..."
 pip install -r requirements.txt -q
 
+$iconSource = $null
+if (Test-Path "tray_icon.png") {
+    $iconSource = "tray_icon.png"
+} elseif (Test-Path "logo.png") {
+    $iconSource = "logo.png"
+}
+
+if ($iconSource) {
+    Write-Host "Gerando printer_agent.ico a partir de $iconSource ..."
+    python -c "from PIL import Image; img=Image.open(r'$iconSource').convert('RGBA'); img.save('printer_agent.ico', format='ICO', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+}
+
+if (Test-Path "dist\printer_agent.exe") {
+    Remove-Item "dist\printer_agent.exe" -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host ""
 Write-Host "Gerando printer_agent.exe ..."
-pyinstaller printer_agent.spec
+pyinstaller --clean --noconfirm printer_agent.spec
 
 if (Test-Path "dist\printer_agent.exe") {
     Write-Host ""

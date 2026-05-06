@@ -29,6 +29,8 @@ if getattr(sys, "frozen", False):
 import config
 import printer_service
 import windows_startup
+import log_buffer
+from logging.handlers import RotatingFileHandler
 from websocket_client import PrinterWebSocketClient
 from tray import TrayIcon
 from config_window import ConfigWindow
@@ -38,6 +40,18 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
+log_buffer.install()
+
+# Log persistido em arquivo rotativo (2 MB × 3 arquivos)
+_log_file = os.path.join(config.get_config_dir(), "printer_agent.log")
+_file_handler = RotatingFileHandler(
+    _log_file, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
+)
+_file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+))
+logging.getLogger().addHandler(_file_handler)
+
 logger = logging.getLogger("printer_agent")
 
 ACTIVATION_HOST = "127.0.0.1"
@@ -241,9 +255,37 @@ class PrinterAgent:
             on_disconnected=lambda: self._set_status("disconnected"),
             on_error=lambda msg: logger.error("WebSocket erro: %s", msg),
             on_auth_failed=lambda msg: self._handle_auth_failed(msg),
+            on_print_result=self._on_print_result,
         )
 
+        # Inicia monitor periódico de impressora junto com a conexão
+        asyncio.ensure_future(self._printer_monitor_loop())
+
         await self._ws_client.start()
+
+    def _on_print_result(self, job_id: str, success: bool, message: str) -> None:
+        """Chamado pela thread do WebSocket após cada impressão real."""
+        printer_name = self._config.get("printer_name", "")
+        if self._tray:
+            self._tray.set_printer_status(success, printer_name)
+            if not success:
+                code = job_id if job_id != "unknown" else ""
+                title = "Falha na Impressão"
+                body = f"Ticket {code}: {message}" if code else message
+                logger.warning("Notificando falha de impressão (job %s): %s", job_id, message)
+                self._tray.notify(title, body)
+
+    async def _printer_monitor_loop(self) -> None:
+        """Verifica o status da impressora a cada 30s e atualiza o ícone da bandeja."""
+        client = self._ws_client  # captura o cliente atual; para quando ele trocar
+        while self._ws_client is client and client is not None:
+            await asyncio.sleep(30)
+            if self._ws_client is not client:
+                break
+            printer_name = self._config.get("printer_name", "")
+            if printer_name and self._tray:
+                ready, _ = printer_service._check_printer_status(printer_name)
+                self._tray.set_printer_status(ready, printer_name)
 
     def _handle_auth_failed(self, message: str) -> None:
         self._set_status("disconnected")
@@ -288,9 +330,10 @@ class PrinterAgent:
         self.sync_windows_startup()
         self._reconnect()
 
-    def _on_test_print_from_config(self, printer_name: str) -> None:
+    def _on_test_print_from_config(self, printer_name: str) -> tuple[bool, str]:
         success, msg = printer_service.test_print(printer_name)
         logger.info("Teste de impressão: %s — %s", "OK" if success else "FALHA", msg)
+        return success, msg
 
     # -- Tray actions --
 
@@ -301,10 +344,15 @@ class PrinterAgent:
     def _test_print(self) -> None:
         printer_name = self._config.get("printer_name", "")
         if not printer_name:
+            if self._tray:
+                self._tray.notify("Impressão de Teste", "Nenhuma impressora configurada.")
             logger.warning("Nenhuma impressora configurada")
             return
         success, msg = printer_service.test_print(printer_name)
         logger.info("Teste de impressão: %s — %s", "OK" if success else "FALHA", msg)
+        if self._tray:
+            title = "Impressão de Teste"
+            self._tray.notify(title, msg)
 
     def _request_exit(self) -> None:
         """Chamado da thread do tray — agenda shutdown na thread do tkinter."""
