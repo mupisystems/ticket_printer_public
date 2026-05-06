@@ -1,5 +1,6 @@
 # Executáveis compilados
 *.exe
+!App-de-Impressao-V2.exe
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
