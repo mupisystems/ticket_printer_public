@@ -90,7 +90,7 @@ class TrayIcon:
                 enabled=False,
             ),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Configurações", self._handle_open_config),
+            pystray.MenuItem("Configurações/Abrir", self._handle_open_config, default=True),
             pystray.MenuItem("Reconectar", self._handle_reconnect),
             pystray.MenuItem("Impressão de Teste", self._handle_test_print),
             pystray.Menu.SEPARATOR,

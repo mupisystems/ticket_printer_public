@@ -116,13 +116,21 @@ class _OBtn(tk.Canvas):
                          highlightthickness=0, cursor="hand2", **kw)
         self._text, self._cmd, self._color = text, cmd, color
         self._bw, self._bh, self._br = w, h, r
+        self._enabled = True
         self._draw(False)
-        self.bind("<Enter>",           lambda e: self._draw(True))
-        self.bind("<Leave>",           lambda e: self._draw(False))
+        self.bind("<Enter>",           lambda e: self._enabled and self._draw(True))
+        self.bind("<Leave>",           lambda e: self._enabled and self._draw(False))
         self.bind("<ButtonRelease-1>", self._click)
 
     def _draw(self, hover: bool):
         self.delete("all")
+        if not self._enabled:
+            disabled_color = "#94a3b8"
+            _rr(self, 1, 1, self._bw - 1, self._bh - 1, self._br,
+                fill="#f1f5f9", outline=disabled_color)
+            self.create_text(self._bw // 2, self._bh // 2,
+                             text=self._text, fill=disabled_color, font=F_BTN_SM)
+            return
         _rr(self, 1, 1, self._bw - 1, self._bh - 1, self._br,
             fill=self._color if hover else "#ffffff",
             outline=self._color)
@@ -132,9 +140,23 @@ class _OBtn(tk.Canvas):
                          font=F_BTN_SM)
 
     def _click(self, _):
+        if not self._enabled:
+            return
         self._draw(False)
         if self._cmd:
             self._cmd()
+
+    def set_text(self, text: str) -> None:
+        self._text = text
+        self._draw(False)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = bool(enabled)
+        try:
+            self.configure(cursor="hand2" if self._enabled else "arrow")
+        except tk.TclError:
+            pass
+        self._draw(False)
 
 
 # ─── Janela principal ─────────────────────────────────────────────────────────
@@ -401,7 +423,8 @@ class ConfigWindow:
 
         # Direita: ações (empacotado em ordem inversa para pack(side=RIGHT))
         _Btn( row, "Salvar",           self._save,            w=82,  h=34).pack(side=tk.RIGHT)
-        _OBtn(row, "Testar Impressão", self._test_print,      w=122, h=34).pack(side=tk.RIGHT, padx=(0, 6))
+        self._test_print_btn = _OBtn(row, "Testar Impressão", self._test_print, w=122, h=34)
+        self._test_print_btn.pack(side=tk.RIGHT, padx=(0, 6))
         _OBtn(row, "Testar Conexão",   self._test_connection, w=116, h=34).pack(side=tk.RIGHT, padx=(0, 6))
 
     def _open_logs(self) -> None:
@@ -572,6 +595,22 @@ class ConfigWindow:
             return
 
         self._testing_print = True
+        btn = getattr(self, "_test_print_btn", None)
+        if btn is not None:
+            try:
+                btn.set_text("Testando...")
+                btn.set_enabled(False)
+            except tk.TclError:
+                pass
+
+        def _restore_btn():
+            self._testing_print = False
+            if btn is not None:
+                try:
+                    btn.set_text("Testar Impressão")
+                    btn.set_enabled(True)
+                except tk.TclError:
+                    pass
 
         def _run():
             try:
@@ -597,7 +636,7 @@ class ConfigWindow:
                     pass
             finally:
                 try:
-                    self._window.after(0, lambda: setattr(self, "_testing_print", False))
+                    self._window.after(0, _restore_btn)
                 except tk.TclError:
                     pass
 
