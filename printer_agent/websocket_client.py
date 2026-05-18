@@ -5,18 +5,73 @@ Cliente WebSocket com auto-reconnect e autenticação por primeira mensagem.
 import json
 import asyncio
 import logging
+import os
+import time
 from typing import Callable, Optional
 
 import websockets
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
+import config
 import printer_service
 
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_SIZE = 64 * 1024  # 64KB
 VALID_SERVER_TYPES = {"auth_ok", "auth_error", "print", "ping"}
+
+# Deduplicação de jobs: evita imprimir o mesmo job_id duas vezes quando o
+# servidor re-envia jobs pendentes após uma reconexão do WebSocket.
+# O cache é persistido em disco para sobreviver a crashes e reinicializações.
+_PRINTED_JOB_TTL = 300  # segundos que um job_id fica registrado como impresso
+_printed_job_ids: dict[str, float] = {}
+
+
+def _cache_path() -> str:
+    return os.path.join(config.get_config_dir(), "printed_jobs_cache.json")
+
+
+def _load_job_cache() -> None:
+    path = _cache_path()
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        now = time.time()
+        for job_id, ts in data.items():
+            if now - ts <= _PRINTED_JOB_TTL:
+                _printed_job_ids[job_id] = ts
+    except Exception as e:
+        logger.warning("Erro ao carregar cache de jobs impressos: %s", e)
+
+
+def _save_job_cache() -> None:
+    try:
+        with open(_cache_path(), "w", encoding="utf-8") as f:
+            json.dump(_printed_job_ids, f)
+    except Exception as e:
+        logger.warning("Erro ao salvar cache de jobs impressos: %s", e)
+
+
+def _is_duplicate_job(job_id: str) -> bool:
+    if not job_id or job_id == "unknown":
+        return False
+    now = time.time()
+    expired = [k for k, ts in list(_printed_job_ids.items()) if now - ts > _PRINTED_JOB_TTL]
+    for k in expired:
+        del _printed_job_ids[k]
+    return job_id in _printed_job_ids
+
+
+def _register_printed_job(job_id: str) -> None:
+    if job_id and job_id != "unknown":
+        _printed_job_ids[job_id] = time.time()
+        _save_job_cache()
+
+
+_load_job_cache()
 
 
 class PrinterWebSocketClient:
@@ -153,6 +208,12 @@ class PrinterWebSocketClient:
 
     async def _handle_print(self, msg: dict) -> None:
         job_id = msg.get("id", "unknown")
+
+        if _is_duplicate_job(job_id):
+            logger.warning("Job %s já impresso — ignorando duplicata do servidor", job_id)
+            await self._send_result(job_id, "success", "Já impresso")
+            return
+
         data = msg.get("data")
 
         if not isinstance(data, dict):
@@ -161,9 +222,15 @@ class PrinterWebSocketClient:
 
         # Impressão em thread separada para não bloquear o event loop
         loop = asyncio.get_event_loop()
-        success, message = await loop.run_in_executor(
+        success, message, reached_spooler = await loop.run_in_executor(
             None, printer_service.print_ticket, self.printer_name, data
         )
+
+        # Registra o job se dados foram enviados ao spooler, mesmo em caso de
+        # falha de detecção — evita duplicata quando o servidor reenviar o
+        # mesmo job_id (o ticket pode já ter sido impresso fisicamente).
+        if success or reached_spooler:
+            _register_printed_job(job_id)
 
         status = "success" if success else "error"
         await self._send_result(job_id, status, message)

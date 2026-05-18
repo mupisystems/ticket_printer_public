@@ -18,6 +18,8 @@ except ImportError:
     DPAPI_AVAILABLE = False
     logger.warning("win32crypt não disponível — token será armazenado em texto puro")
 
+APP_VERSION = "2.1.0"
+
 ENVIRONMENTS = {
     "localhost": "ws://localhost:8000/ws/printer",
     "homologacao": "wss://testes.meuatendimentovirtual.com.br/ws/printer",

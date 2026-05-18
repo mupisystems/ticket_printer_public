@@ -1,6 +1,5 @@
 # Executáveis compilados
 *.exe
-!Agente-de-Impressao.exe
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -132,3 +131,4 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+!App de Impressao - Meu Atendimento Virtual 2.1.0.exe 

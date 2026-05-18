@@ -4,6 +4,7 @@ Suporta dois modelos de comprovante: padrão e clássico térmico (80mm).
 """
 
 import logging
+import threading
 import time
 import config
 from escpos.printer import Win32Raw
@@ -14,6 +15,10 @@ from ticket_formatter import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Garante que apenas uma impressão ocorra por vez (test print + job real podem
+# coexistir em threads distintas e corromper a fila um do outro).
+_print_lock = threading.Lock()
 
 try:
     import win32print
@@ -299,98 +304,110 @@ def _get_printer(printer_name: str) -> Win32Raw:
     return Win32Raw(printer_name, profile="TM-T20II")
 
 
-def print_ticket(printer_name: str, data: dict) -> tuple[bool, str]:
+def print_ticket(printer_name: str, data: dict) -> tuple[bool, str, bool]:
     """
     Imprime um ticket na impressora especificada.
     Usa o modelo de comprovante configurado (padrão ou clássico térmico).
 
     Returns:
-        (success, message)
+        (success, message, reached_spooler)
+        reached_spooler=False → falha antes de qualquer envio ao spooler (seguro
+        para o servidor retentar). reached_spooler=True → dados foram enviados ao
+        spooler; mesmo que success=False, o ticket pode já ter sido impresso
+        fisicamente, então o job_id deve ser registrado para evitar duplicata.
     """
-    valid, error = validate_print_data(data)
-    if not valid:
-        logger.warning("Dados de impressão inválidos: %s", error)
-        return False, error
+    with _print_lock:
+        valid, error = validate_print_data(data)
+        if not valid:
+            logger.warning("Dados de impressão inválidos: %s", error)
+            return False, error, False
 
-    # Verifica status antes de enviar ao spooler — evita fila silenciosa
-    ready, reason = _check_printer_status(printer_name)
-    if not ready:
-        msg = f"Impressora não disponível: {reason}"
-        logger.error("Impressão bloqueada (%s): %s", printer_name, reason)
-        return False, msg
+        # Verifica status antes de enviar ao spooler — evita fila silenciosa
+        ready, reason = _check_printer_status(printer_name)
+        if not ready:
+            msg = f"Impressora não disponível: {reason}"
+            logger.error("Impressão bloqueada (%s): %s", printer_name, reason)
+            return False, msg, False
 
-    cfg = config.load_config()
-    receipt_model = cfg.get("receipt_model", "default")
+        cfg = config.load_config()
+        receipt_model = cfg.get("receipt_model", "default")
 
-    # Limpa jobs antigos presos de tentativas anteriores com impressora desconectada.
-    if _all_job_ids(printer_name):
-        purge_print_queue(printer_name)
+        # Limpa jobs antigos presos de tentativas anteriores com impressora desconectada.
+        if _all_job_ids(printer_name):
+            purge_print_queue(printer_name)
 
-    # Snapshot de todos os jobs antes de enviar (inclui concluídos/deletados para
-    # identificar exatamente o job recém-enviado, independente do status).
-    before_all = _all_job_ids(printer_name)
+        # Snapshot de todos os jobs antes de enviar (inclui concluídos/deletados para
+        # identificar exatamente o job recém-enviado, independente do status).
+        before_all = _all_job_ids(printer_name)
 
-    if receipt_model == "thermal_classic":
-        ok, msg = format_ticket_thermal_classic(printer_name, data)
-    else:
-        try:
-            printer = _get_printer(printer_name)
-        except Exception as e:
-            msg = f"Erro ao conectar à impressora '{printer_name}': {e}"
-            logger.error(msg)
-            return False, msg
-
-        try:
-            format_ticket(printer, data)
-            printer.close()
-            ok, msg = True, "Ticket impresso com sucesso"
-        except Exception as e:
-            msg = f"Erro ao imprimir: {e}"
-            logger.error(msg)
+        if receipt_model == "thermal_classic":
+            ok, msg = format_ticket_thermal_classic(printer_name, data)
+        else:
             try:
+                printer = _get_printer(printer_name)
+            except Exception as e:
+                msg = f"Erro ao conectar à impressora '{printer_name}': {e}"
+                logger.error(msg)
+                return False, msg, False
+
+            try:
+                format_ticket(printer, data)
                 printer.close()
-            except Exception:
-                pass
+                ok, msg = True, "Ticket impresso com sucesso"
+            except Exception as e:
+                msg = f"Erro ao imprimir: {e}"
+                logger.error(msg)
+                try:
+                    printer.close()
+                except Exception:
+                    pass
+                purge_print_queue(printer_name)
+                # Dados foram parcialmente enviados ao spooler — tratar como incerto.
+                return False, msg, True
+
+        if not ok:
+            # Não é possível saber se o spooler foi tocado antes da falha
+            # (StartDocPrinter pode ter sido chamado). Tratar como incerto.
+            return False, msg, True
+
+        # A partir daqui os dados foram enviados ao spooler. Qualquer falha
+        # de detecção deve ser tratada como "possivelmente impresso" para evitar
+        # duplicata caso o servidor reenvie o mesmo job_id.
+
+        # Aguarda o driver tentar comunicar com a porta USB (falha aparece no status
+        # da impressora ou do job imediatamente após a tentativa de escrita).
+        time.sleep(0.4)
+
+        # Verificação imediata após o envio — captura falha USB antes mesmo de
+        # rastrear o job na fila. Resolve o caso do EXE onde o job some da fila
+        # muito rápido (< 150ms) e só o status da impressora reflete o erro.
+        ready_quick, reason_quick = _check_printer_status(printer_name)
+        if not ready_quick:
             purge_print_queue(printer_name)
-            return False, msg
+            logger.error("Impressora em erro logo após envio (%s): %s", printer_name, reason_quick)
+            return False, "Impressora não respondeu. Verifique se está ligada e conectada.", True
 
-    if not ok:
-        return False, msg
+        # Rastreia o job específico (timeout reduzido pois já esperamos 0.4s).
+        # _poll_job_result também checa status da impressora ao final.
+        new_job_id = _find_new_job(printer_name, before_all, timeout=1.1)
+        if new_job_id is not None:
+            job_ok, job_reason = _poll_job_result(printer_name, new_job_id)
+            if not job_ok:
+                purge_print_queue(printer_name)
+                logger.error("Job %d falhou (%s): %s", new_job_id, printer_name, job_reason)
+                if "timeout" in job_reason:
+                    return False, "Impressora não processou o job. Verifique se está ligada e conectada.", True
+                return False, "Impressora não respondeu. Verifique se está ligada e conectada.", True
+        else:
+            # Job não encontrado na fila — fallback: monitora status por mais 0.8s.
+            stable_ok, stable_reason = _poll_printer_stable(printer_name, seconds=0.8)
+            if not stable_ok:
+                purge_print_queue(printer_name)
+                logger.error("Falha pós-envio sem job detectado (%s): %s", printer_name, stable_reason)
+                return False, "Impressora não respondeu. Verifique se está ligada e conectada.", True
 
-    # Aguarda o driver tentar comunicar com a porta USB (falha aparece no status
-    # da impressora ou do job imediatamente após a tentativa de escrita).
-    time.sleep(0.4)
-
-    # Verificação imediata após o envio — captura falha USB antes mesmo de
-    # rastrear o job na fila. Resolve o caso do EXE onde o job some da fila
-    # muito rápido (< 150ms) e só o status da impressora reflete o erro.
-    ready_quick, reason_quick = _check_printer_status(printer_name)
-    if not ready_quick:
-        purge_print_queue(printer_name)
-        logger.error("Impressora em erro logo após envio (%s): %s", printer_name, reason_quick)
-        return False, "Impressora não respondeu. Verifique se está ligada e conectada."
-
-    # Rastreia o job específico (timeout reduzido pois já esperamos 0.4s).
-    # _poll_job_result também checa status da impressora ao final.
-    new_job_id = _find_new_job(printer_name, before_all, timeout=1.1)
-    if new_job_id is not None:
-        job_ok, job_reason = _poll_job_result(printer_name, new_job_id)
-        if not job_ok:
-            purge_print_queue(printer_name)
-            logger.error("Job %d falhou (%s): %s", new_job_id, printer_name, job_reason)
-            if "timeout" in job_reason:
-                return False, "Impressora não processou o job. Verifique se está ligada e conectada."
-            return False, "Impressora não respondeu. Verifique se está ligada e conectada."
-    else:
-        # Job não encontrado na fila — fallback: monitora status por mais 0.8s.
-        stable_ok, stable_reason = _poll_printer_stable(printer_name, seconds=0.8)
-        if not stable_ok:
-            purge_print_queue(printer_name)
-            logger.error("Falha pós-envio sem job detectado (%s): %s", printer_name, stable_reason)
-            return False, "Impressora não respondeu. Verifique se está ligada e conectada."
-
-    logger.info("Ticket impresso com sucesso (código: %s)", data.get("code", "?"))
-    return True, "Ticket impresso com sucesso"
+        logger.info("Ticket impresso com sucesso (código: %s)", data.get("code", "?"))
+        return True, "Ticket impresso com sucesso", True
 
 
 def test_print(printer_name: str) -> tuple[bool, str]:
@@ -405,7 +422,7 @@ def test_print(printer_name: str) -> tuple[bool, str]:
         "created_date": "2024-01-01 00:00",
         "footer": "Impressão de teste OK",
     }
-    ok, msg = print_ticket(printer_name, test_data)
+    ok, msg, _ = print_ticket(printer_name, test_data)
     if ok:
         logger.info("Teste de impressão OK (%s)", printer_name)
         return True, "Impressão de teste realizada com sucesso!"

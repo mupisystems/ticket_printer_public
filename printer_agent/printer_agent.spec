@@ -3,6 +3,7 @@
 # (executar na pasta printer_agent)
 
 import os
+import sys
 
 
 def _resolve_windows_icon(spec_dir: str) -> str | None:
@@ -35,6 +36,10 @@ def _resolve_windows_icon(spec_dir: str) -> str | None:
 # PyInstaller define SPECPATH = pasta do .spec quando executa o spec
 spec_dir = SPECPATH
 exe_icon = _resolve_windows_icon(spec_dir)
+
+sys.path.insert(0, spec_dir)
+from config import APP_VERSION
+exe_name = f'App de Impressao - Meu Atendimento Virtual {APP_VERSION}'
 
 block_cipher = None
 
@@ -92,11 +97,11 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='printer_agent',
+    name=exe_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,  # UPX desativado: compressão UPX aumenta falsos positivos em AVs
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,  # sem janela de console (app de bandeja)
@@ -106,4 +111,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=exe_icon,
+    version=os.path.join(spec_dir, 'version_info.txt'),
 )

@@ -320,6 +320,9 @@ class ConfigWindow:
         tk.Label(info, text="Agente de Impressão · Meu Atendimento Virtual",
                  bg=C_CARD, fg=C_MUTED, font=F_SUB).pack(anchor="w")
 
+        tk.Label(inner, text=f"v{config.APP_VERSION}", bg=C_CARD, fg=C_BORDER,
+                 font=F_SUB).pack(side=tk.RIGHT, anchor="s")
+
     def _build_status(self, status: str) -> None:
         wrap = tk.Frame(self._window, bg=C_BG)
         wrap.pack(fill=tk.X, padx=16, pady=(12, 0))
