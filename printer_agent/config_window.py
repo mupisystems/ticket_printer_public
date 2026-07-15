@@ -41,6 +41,12 @@ F_BTN_SM  = ("Inter", 9, "bold")
 LOGO_FILE              = "logo.png"
 WINDOW_ICON_CANDIDATES = ("tray_icon.png", "logo.png")
 
+# Largura máxima do conteúdo; em telas largas o conteúdo é centralizado
+# em vez de esticar, mantendo os cards legíveis em totens grandes.
+MAX_CONTENT_W = 620
+# Largura padrão da janela em telas normais.
+DEFAULT_W = 490
+
 
 # ─── Utilidades ───────────────────────────────────────────────────────────────
 
@@ -159,6 +165,70 @@ class _OBtn(tk.Canvas):
         self._draw(False)
 
 
+# ─── Ícones (estilo Lucide, desenhados no Canvas — sem dependência de SVG) ─────
+
+class _Icon(tk.Canvas):
+    """Ícone vetorial minimalista no estilo Lucide (traço fino, cantos suaves).
+
+    Desenhado direto no Canvas para não depender de renderização de SVG no
+    executável empacotado. Ícones disponíveis: printer, key, receipt, server,
+    sliders, plug.
+    """
+
+    def __init__(self, parent, name: str, size: int = 16,
+                 color: str = C_PRIMARY, bg: Optional[str] = None, **kw):
+        super().__init__(parent, width=size, height=size,
+                         bg=bg or _safe_bg(parent), highlightthickness=0, bd=0, **kw)
+        self._draw(name, size, color)
+
+    def _draw(self, name: str, size: int, color: str) -> None:
+        s = size / 24.0                       # escala a partir do viewBox 24×24
+        w = max(2, round(size / 10))          # espessura do traço
+
+        def line(x1, y1, x2, y2):
+            self.create_line(x1 * s, y1 * s, x2 * s, y2 * s, fill=color,
+                             width=w, capstyle=tk.ROUND, joinstyle=tk.ROUND)
+
+        def rect(x1, y1, x2, y2, fill=""):
+            self.create_rectangle(x1 * s, y1 * s, x2 * s, y2 * s,
+                                  outline=color, width=w, fill=fill)
+
+        def circle(cx, cy, r, fill=""):
+            self.create_oval((cx - r) * s, (cy - r) * s, (cx + r) * s, (cy + r) * s,
+                             outline=color, width=w, fill=fill)
+
+        def dot(cx, cy, r):
+            self.create_oval((cx - r) * s, (cy - r) * s, (cx + r) * s, (cy + r) * s,
+                             outline=color, fill=color)
+
+        bg = self.cget("bg")
+
+        if name == "printer":
+            line(6, 8, 6, 3); line(18, 8, 18, 3); line(6, 3, 18, 3)   # folha superior
+            rect(3, 8, 21, 17)                                         # corpo
+            rect(6, 14, 18, 21, fill=bg)                               # bandeja de saída
+            dot(16.5, 11, 0.8)                                         # LED
+        elif name == "key":
+            circle(7.5, 15.5, 3.2)
+            line(9.8, 13.2, 21, 2)
+            line(15.5, 5.5, 18, 8)
+            line(18.5, 2.5, 21, 5)
+        elif name == "receipt":
+            rect(6, 2, 18, 22)
+            line(9, 7, 15, 7); line(9, 11, 15, 11); line(9, 15, 13, 15)
+        elif name == "server":
+            rect(3, 4, 21, 10); dot(6.5, 7, 0.9); line(15, 7, 18, 7)
+            rect(3, 14, 21, 20); dot(6.5, 17, 0.9); line(15, 17, 18, 17)
+        elif name == "sliders":
+            line(4, 8, 20, 8);  circle(9, 8, 2, fill=bg)
+            line(4, 16, 20, 16); circle(15, 16, 2, fill=bg)
+        elif name == "plug":
+            line(12, 2, 12, 6)
+            rect(7, 6, 17, 13)
+            line(10, 6, 10, 3); line(14, 6, 14, 3)
+            line(12, 13, 12, 20); circle(12, 21, 1.2)
+
+
 # ─── Janela principal ─────────────────────────────────────────────────────────
 
 class ConfigWindow:
@@ -204,9 +274,11 @@ class ConfigWindow:
         self._logo_photo = None
         self._icon_photo = None
 
+        self._adv_open = False
+
         self._window = tk.Toplevel(tk_root)
         self._window.title("Configurações · Agente de Impressão")
-        self._window.resizable(False, True)
+        self._window.resizable(True, True)
         self._window.configure(bg=C_BG)
         self._window.protocol("WM_DELETE_WINDOW", self._close)
 
@@ -214,19 +286,15 @@ class ConfigWindow:
         self._build(connection_status)
         self._load()
 
-        # Centraliza na tela; limita altura à tela disponível
+        # Rolagem + geometria adaptadas à tela (funciona em totens pequenos)
         self._window.update_idletasks()
         self._bind_mousewheel()
 
-        w  = 490
-        sh = self._window.winfo_screenheight()
         sw = self._window.winfo_screenwidth()
-        # Altura ideal = partes fixas (header+status+footer) + conteúdo rolável
-        content_h = self._scroll_inner.winfo_reqheight()
-        fixed_h   = self._window.winfo_reqheight() - self._scroll_outer.winfo_reqheight()
-        ideal_h   = fixed_h + content_h
-        h = max(420, min(ideal_h, sh - 80))
-        self._window.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+        sh = self._window.winfo_screenheight()
+        # Tamanho mínimo que ainda cabe em telas pequenas, sem colapsar a UI.
+        self._window.minsize(min(380, sw - 20), min(320, sh - 40))
+        self._fit_geometry(center=True)
         self._window.focus_force()
 
     # ── Ícone da janela ───────────────────────────────────────────────────────
@@ -260,29 +328,68 @@ class ConfigWindow:
         self._scroll_outer.pack(fill=tk.BOTH, expand=True)
 
         self._canvas = tk.Canvas(self._scroll_outer, bg=C_BG, highlightthickness=0, bd=0)
-        vscroll = ttk.Scrollbar(self._scroll_outer, orient="vertical", command=self._canvas.yview)
-        self._canvas.configure(yscrollcommand=vscroll.set)
+        self._vscroll = ttk.Scrollbar(self._scroll_outer, orient="vertical",
+                                      command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=self._vscroll.set)
 
-        vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        # A scrollbar é empacotada sob demanda (só quando o conteúdo transborda).
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self._scroll_inner = tk.Frame(self._canvas, bg=C_BG)
         self._cw_id = self._canvas.create_window((0, 0), window=self._scroll_inner, anchor="nw")
 
-        self._scroll_inner.bind("<Configure>", lambda e: self._canvas.configure(
-            scrollregion=self._canvas.bbox("all")
-        ))
-        self._canvas.bind("<Configure>", lambda e: self._canvas.itemconfig(
-            self._cw_id, width=e.width
-        ))
+        self._scroll_inner.bind("<Configure>", self._on_inner_configure)
+        self._canvas.bind("<Configure>", self._on_canvas_configure)
 
         self._build_content(self._scroll_inner)
 
+    def _on_inner_configure(self, _event: Optional[tk.Event] = None) -> None:
+        self._update_scrollregion()
+        self._update_scrollbar()
+
+    def _on_canvas_configure(self, event: tk.Event) -> None:
+        # Limita a largura do conteúdo e centraliza em telas largas.
+        width = min(event.width, MAX_CONTENT_W)
+        x = max(0, (event.width - width) // 2)
+        self._canvas.coords(self._cw_id, x, 0)
+        self._canvas.itemconfig(self._cw_id, width=width)
+        self._update_scrollregion()
+        self._update_scrollbar()
+
+    def _update_scrollregion(self) -> None:
+        # Região de rolagem fixada em 0..largura (sem o deslocamento horizontal
+        # da centralização). Usar bbox("all") aqui herdaria o offset e faria o
+        # conteúdo "sumir" (fundo cinza) ao restaurar a janela maximizada.
+        content_h = self._scroll_inner.winfo_reqheight()
+        cw = max(self._canvas.winfo_width(), 1)
+        self._canvas.configure(scrollregion=(0, 0, cw, content_h))
+
+    def _update_scrollbar(self) -> None:
+        """Mostra a scrollbar apenas quando o conteúdo não cabe na viewport."""
+        try:
+            need = self._scroll_inner.winfo_reqheight() > self._canvas.winfo_height() + 1
+        except tk.TclError:
+            return
+        mapped = self._vscroll.winfo_ismapped()
+        if need and not mapped:
+            self._vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        elif not need and mapped:
+            self._vscroll.pack_forget()
+
     def _on_mousewheel(self, event: tk.Event) -> None:
+        # Só rola quando há conteúdo transbordando (evita "pulos" quando cabe tudo).
+        if self._scroll_inner.winfo_reqheight() <= self._canvas.winfo_height():
+            return
         self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _bind_mousewheel(self) -> None:
-        """Liga roda do mouse em todos os widgets da área rolável."""
+        """Liga a roda do mouse em cada widget da área rolável.
+
+        Binding por-widget (em vez de bind_all via Enter/Leave) evita o bug em
+        que entrar num filho dispara <Leave> no canvas e desliga a rolagem.
+        A seção avançada já é construída no init (só não é empacotada), então
+        também fica coberta aqui.
+        """
         self._canvas.bind("<MouseWheel>", self._on_mousewheel)
         self._recursive_bind(self._scroll_inner)
 
@@ -342,6 +449,8 @@ class ConfigWindow:
 
         tk.Label(row, text="status da conexão", bg=C_CARD,
                  fg=C_MUTED, font=F_SUB).pack(side=tk.RIGHT)
+        _Icon(row, "plug", size=14, color=C_MUTED, bg=C_CARD).pack(
+            side=tk.RIGHT, padx=(0, 6))
 
         self._render_status(status)
 
@@ -349,19 +458,10 @@ class ConfigWindow:
         wrap = tk.Frame(parent, bg=C_BG)
         wrap.pack(fill=tk.BOTH, padx=16, pady=12)
 
-        # Servidor
-        outer, srv = self._section_card(wrap, "SERVIDOR")
-        outer.pack(fill=tk.X, pady=(0, 10))
-        self._env_var = tk.StringVar()
-        self._env_combo = self._combo_row(srv, "Ambiente", self._env_var,
-                                          list(config.ENVIRONMENT_LABELS.values()))
-        self._env_combo.bind("<<ComboboxSelected>>", self._on_env_change)
-        self._url_var = tk.StringVar()
-        self._url_entry = self._entry_row(srv, "URL do servidor", self._url_var)
-        tk.Frame(srv, bg=C_CARD, height=8).pack()
+        # ─── Área visível ao cliente comum ──────────────────────────────────
 
         # Autenticação
-        outer, auth = self._section_card(wrap, "AUTENTICAÇÃO")
+        outer, auth = self._section_card(wrap, "AUTENTICAÇÃO", icon="key")
         outer.pack(fill=tk.X, pady=(0, 10))
         self._token_var = tk.StringVar()
         self._token_entry = self._entry_row(auth, "Token de acesso", self._token_var, show="*")
@@ -375,7 +475,7 @@ class ConfigWindow:
         ).pack(anchor="e")
 
         # Impressora
-        outer, prn = self._section_card(wrap, "IMPRESSORA")
+        outer, prn = self._section_card(wrap, "IMPRESSORA", icon="printer")
         outer.pack(fill=tk.X, pady=(0, 10))
         self._printer_var = tk.StringVar()
         self._printer_combo = self._combo_row(prn, "Dispositivo", self._printer_var, [])
@@ -386,16 +486,42 @@ class ConfigWindow:
               color=C_MUTED, w=142, h=26).pack(side=tk.RIGHT)
 
         # Comprovante
-        outer, rec = self._section_card(wrap, "COMPROVANTE")
+        outer, rec = self._section_card(wrap, "COMPROVANTE", icon="receipt")
         outer.pack(fill=tk.X, pady=(0, 10))
         self._receipt_model_var = tk.StringVar()
         self._receipt_combo = self._combo_row(rec, "Modelo de layout", self._receipt_model_var,
                                               list(config.RECEIPT_MODEL_LABELS.values()))
         tk.Frame(rec, bg=C_CARD, height=8).pack()
 
+        # ─── Link discreto "Avançado" ───────────────────────────────────────
+        # Quase invisível: cinza claro, sem card. A maioria dos clientes nunca
+        # precisa abrir; suporte expande quando necessário.
+        self._adv_toggle = tk.Label(
+            wrap, text="⚙  Configurações avançadas  ▾",
+            bg=C_BG, fg=C_MUTED, font=F_SUB, cursor="hand2",
+        )
+        self._adv_toggle.pack(anchor="w", pady=(4, 2))
+        self._adv_toggle.bind("<Button-1>", lambda _e: self._toggle_advanced())
+        self._adv_toggle.bind("<Enter>", lambda _e: self._adv_toggle.configure(fg=C_PRIMARY))
+        self._adv_toggle.bind("<Leave>", lambda _e: self._adv_toggle.configure(fg=C_MUTED))
+
+        # ─── Container avançado (oculto por padrão) ──────────────────────────
+        self._adv_container = tk.Frame(wrap, bg=C_BG)
+
+        # Servidor
+        outer, srv = self._section_card(self._adv_container, "SERVIDOR", icon="server")
+        outer.pack(fill=tk.X, pady=(4, 10))
+        self._env_var = tk.StringVar()
+        self._env_combo = self._combo_row(srv, "Ambiente", self._env_var,
+                                          list(config.ENVIRONMENT_LABELS.values()))
+        self._env_combo.bind("<<ComboboxSelected>>", self._on_env_change)
+        self._url_var = tk.StringVar()
+        self._url_entry = self._entry_row(srv, "URL do servidor", self._url_var)
+        tk.Frame(srv, bg=C_CARD, height=8).pack()
+
         # Opções
-        outer, opt = self._section_card(wrap, "OPÇÕES")
-        outer.pack(fill=tk.X)
+        outer, opt = self._section_card(self._adv_container, "OPÇÕES", icon="sliders")
+        outer.pack(fill=tk.X, pady=(0, 10))
         self._auto_connect_var = tk.BooleanVar()
         self._start_windows_var = tk.BooleanVar()
         for var, label in (
@@ -411,6 +537,62 @@ class ConfigWindow:
             ).pack(anchor="w")
         tk.Frame(opt, bg=C_CARD, height=10).pack()
 
+        # Logs (ferramenta de suporte)
+        logs_row = tk.Frame(self._adv_container, bg=C_BG)
+        logs_row.pack(fill=tk.X, pady=(0, 2))
+        _OBtn(logs_row, "Exibir Logs", self._open_logs,
+              color=C_MUTED, w=110, h=30).pack(side=tk.LEFT)
+
+    def _toggle_advanced(self) -> None:
+        self._adv_open = not self._adv_open
+        if self._adv_open:
+            self._adv_container.pack(fill=tk.X, after=self._adv_toggle)
+            self._adv_toggle.configure(text="⚙  Ocultar configurações avançadas  ▴")
+        else:
+            self._adv_container.pack_forget()
+            self._adv_toggle.configure(text="⚙  Configurações avançadas  ▾")
+        self._relayout()
+
+    def _relayout(self) -> None:
+        """Recalcula rolagem e altura da janela após expandir/recolher seções."""
+        self._window.update_idletasks()
+        self._on_inner_configure()
+        self._fit_geometry(center=False)
+
+    def _fit_geometry(self, center: bool = False) -> None:
+        """Ajusta tamanho/posição da janela à tela, sem estourar totens pequenos.
+
+        A altura acompanha o conteúdo, limitada à tela disponível; o excedente
+        fica acessível via rolagem. O rodapé (side=BOTTOM) permanece sempre
+        visível. Em ``center=False`` preserva a posição atual, apenas evitando
+        que a janela ultrapasse a base da tela.
+        """
+        self._window.update_idletasks()
+        sw = self._window.winfo_screenwidth()
+        sh = self._window.winfo_screenheight()
+
+        w = min(DEFAULT_W, sw - 40)
+
+        # Altura ideal = partes fixas (header+status+footer) + conteúdo rolável.
+        content_h = self._scroll_inner.winfo_reqheight()
+        fixed_h   = self._window.winfo_reqheight() - self._scroll_outer.winfo_reqheight()
+        ideal_h   = fixed_h + content_h
+
+        max_h = sh - 80
+        min_h = min(360, max_h)
+        h = max(min_h, min(ideal_h, max_h))
+
+        if center:
+            x = (sw - w) // 2
+            y = max(0, (sh - h) // 2)
+        else:
+            x = self._window.winfo_x()
+            y = self._window.winfo_y()
+            if y + h > sh - 20:            # não deixa passar da base da tela
+                y = max(0, sh - 20 - h)
+
+        self._window.geometry(f"{w}x{h}+{x}+{y}")
+
     def _build_footer(self) -> None:
         # side=BOTTOM garante que o footer sempre fica visível,
         # mesmo quando o canvas com expand=True toma o restante do espaço.
@@ -420,9 +602,6 @@ class ConfigWindow:
 
         row = tk.Frame(footer, bg=C_CARD)
         row.pack(fill=tk.X, padx=16, pady=12)
-
-        # Esquerda: logs
-        _OBtn(row, "Exibir Logs", self._open_logs, color=C_MUTED, w=90, h=34).pack(side=tk.LEFT)
 
         # Direita: ações (empacotado em ordem inversa para pack(side=RIGHT))
         _Btn( row, "Salvar",           self._save,            w=82,  h=34).pack(side=tk.RIGHT)
@@ -435,14 +614,20 @@ class ConfigWindow:
 
     # ── Helpers de layout ─────────────────────────────────────────────────────
 
-    def _section_card(self, parent: tk.Widget, title: str):
-        """Retorna (outer_to_pack, card_frame) com strip de título."""
+    def _section_card(self, parent: tk.Widget, title: str, icon: Optional[str] = None):
+        """Retorna (outer_to_pack, card_frame) com strip de título e ícone."""
         outer, card = _card_frames(parent)
 
         strip = tk.Frame(card, bg=C_PRIMARY_LIGHT)
         strip.pack(fill=tk.X)
-        tk.Label(strip, text=title, bg=C_PRIMARY_LIGHT, fg=C_PRIMARY,
-                 font=F_SECTION, padx=14, pady=6).pack(side=tk.LEFT)
+        if icon:
+            _Icon(strip, icon, size=16, color=C_PRIMARY, bg=C_PRIMARY_LIGHT).pack(
+                side=tk.LEFT, padx=(14, 0), pady=6)
+            tk.Label(strip, text=title, bg=C_PRIMARY_LIGHT, fg=C_PRIMARY,
+                     font=F_SECTION, padx=8, pady=6).pack(side=tk.LEFT)
+        else:
+            tk.Label(strip, text=title, bg=C_PRIMARY_LIGHT, fg=C_PRIMARY,
+                     font=F_SECTION, padx=14, pady=6).pack(side=tk.LEFT)
 
         return outer, card
 

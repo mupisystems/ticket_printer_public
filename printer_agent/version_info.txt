@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 1, 0, 0),
-    prodvers=(2, 1, 0, 0),
+    filevers=(2, 2, 0, 0),
+    prodvers=(2, 2, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -17,12 +17,12 @@ VSVersionInfo(
           [
             StringStruct(u'CompanyName', u'MupiSystems'),
             StringStruct(u'FileDescription', u'App de Impressao Meu Atendimento Virtual'),
-            StringStruct(u'FileVersion', u'2.1.0.0'),
+            StringStruct(u'FileVersion', u'2.2.0.0'),
             StringStruct(u'InternalName', u'printer_agent'),
             StringStruct(u'LegalCopyright', u'Copyright 2025 MupiSystems'),
             StringStruct(u'OriginalFilename', u'printer_agent.exe'),
             StringStruct(u'ProductName', u'App de Impressao Meu Atendimento Virtual'),
-            StringStruct(u'ProductVersion', u'2.1.0.0'),
+            StringStruct(u'ProductVersion', u'2.2.0.0'),
           ]
         )
       ]
