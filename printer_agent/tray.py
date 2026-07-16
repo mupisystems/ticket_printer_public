@@ -25,6 +25,7 @@ STATUS_LABELS = {
     "connected": "Conectado",
     "disconnected": "Desconectado",
     "connecting": "Conectando...",
+    "reconnecting": "Reconectando...",
 }
 
 TRAY_ICON_SIZE = 64

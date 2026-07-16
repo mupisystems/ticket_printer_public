@@ -148,6 +148,14 @@ class PrinterAgent:
         self._status = "disconnected"
         self._activation_server: ActivationServer | None = None
         self._pending_open_config = False
+        # Identifica a conexão ativa. Cada _connect() incrementa a geração;
+        # callbacks de clientes antigos (que ainda estão encerrando) são
+        # ignorados, evitando que um "disconnected" atrasado sobrescreva o
+        # "connected" do cliente atual.
+        self._connect_generation = 0
+        # Último status já registrado no log — evita repetir a mesma linha a
+        # cada tentativa, mas garante que toda transição real apareça.
+        self._last_logged_status: str | None = None
 
     def sync_windows_startup(self) -> None:
         desired = bool(self._config.get("start_with_windows", True))
@@ -192,6 +200,9 @@ class PrinterAgent:
         tray_thread = threading.Thread(target=self._tray.start, daemon=True)
         tray_thread.start()
 
+        # Estado inicial explícito no log (o primeiro evento é sempre este).
+        self._set_status("disconnected")
+
         # Auto-connect
         if (
             self._config.get("auto_connect", True)
@@ -225,6 +236,10 @@ class PrinterAgent:
         )
 
     async def _connect(self) -> None:
+        # Nova geração de conexão: invalida callbacks do cliente anterior.
+        self._connect_generation += 1
+        gen = self._connect_generation
+
         if self._ws_client:
             await self._ws_client.stop()
 
@@ -251,11 +266,12 @@ class PrinterAgent:
             ws_url=ws_url,
             auth_token=auth_token,
             printer_name=printer_name,
-            on_connected=lambda: self._set_status("connected"),
-            on_disconnected=lambda: self._set_status("disconnected"),
+            on_connected=lambda g=gen: self._on_ws_connected(g),
+            on_disconnected=lambda g=gen: self._on_ws_disconnected(g),
+            on_reconnecting=lambda g=gen: self._on_ws_reconnecting(g),
             on_error=lambda msg: logger.error("WebSocket erro: %s", msg),
-            on_auth_failed=lambda msg: self._handle_auth_failed(msg),
-            on_print_result=self._on_print_result,
+            on_auth_failed=lambda msg, g=gen: self._handle_auth_failed(msg, g),
+            on_print_result=lambda job, ok, m, g=gen: self._on_print_result(job, ok, m, g),
         )
 
         # Inicia monitor periódico de impressora junto com a conexão
@@ -263,8 +279,33 @@ class PrinterAgent:
 
         await self._ws_client.start()
 
-    def _on_print_result(self, job_id: str, success: bool, message: str) -> None:
+    def _on_ws_connected(self, gen: int) -> None:
+        if gen != self._connect_generation:
+            return
+        self._set_status("connected")
+
+    def _on_ws_disconnected(self, gen: int) -> None:
+        # Ignora "disconnected" de um cliente antigo já substituído.
+        if gen != self._connect_generation:
+            return
+        self._set_status("disconnected")
+
+    def _on_ws_reconnecting(self, gen: int) -> None:
+        if gen != self._connect_generation:
+            return
+        self._set_status("reconnecting")
+
+    def _on_print_result(self, job_id: str, success: bool, message: str,
+                         gen: int | None = None) -> None:
         """Chamado pela thread do WebSocket após cada impressão real."""
+        if gen is not None and gen != self._connect_generation:
+            return
+        # Recebemos tráfego do servidor → a conexão está de fato ativa.
+        # Garante que o status reflita "conectado" mesmo que um evento de
+        # desconexão obsoleto o tenha deixado incorreto (falha de impressão
+        # é problema da impressora, não da conexão com o servidor).
+        if self._status != "connected":
+            self._set_status("connected")
         printer_name = self._config.get("printer_name", "")
         if self._tray:
             self._tray.set_printer_status(success, printer_name)
@@ -287,17 +328,41 @@ class PrinterAgent:
                 ready, _ = printer_service._check_printer_status(printer_name)
                 self._tray.set_printer_status(ready, printer_name)
 
-    def _handle_auth_failed(self, message: str) -> None:
+    def _handle_auth_failed(self, message: str, gen: int | None = None) -> None:
+        if gen is not None and gen != self._connect_generation:
+            return
         self._set_status("disconnected")
         logger.error("Autenticação falhou: %s — verifique o token nas configurações", message)
+
+    # Mensagens amigáveis (nível de log, texto) para cada estado da conexão.
+    _STATUS_LOG = {
+        "connecting":   (logging.INFO,    "Conectando ao servidor..."),
+        "connected":    (logging.INFO,    "Aplicativo conectado ao servidor. Pronto para imprimir."),
+        "reconnecting": (logging.WARNING, "Conexão perdida — reconectando ao servidor..."),
+        "disconnected": (logging.WARNING, "Aplicativo desconectado do servidor."),
+    }
 
     def _set_status(self, status: str) -> None:
         self._status = status
         if self._tray:
-            self._tray.set_status(status)
-        if self._tk_root:
-            self._tk_root.after(0, lambda s=status: self._sync_config_status(s))
-        logger.info("Status: %s", status)
+            try:
+                self._tray.set_status(status)
+            except Exception:
+                logger.debug("Falha ao atualizar status na bandeja", exc_info=True)
+        root = self._tk_root
+        if root is not None:
+            try:
+                root.after(0, lambda s=status: self._sync_config_status(s))
+            except (RuntimeError, tk.TclError):
+                # Chamado de outra thread antes do mainloop iniciar (ou após
+                # encerrar). A janela lê o status atual ao abrir, então não
+                # há perda — e isso NUNCA pode derrubar a thread da conexão.
+                pass
+        # Registra a transição no log (uma vez por mudança de estado).
+        if status != self._last_logged_status:
+            self._last_logged_status = status
+            level, msg = self._STATUS_LOG.get(status, (logging.INFO, f"Status: {status}"))
+            logger.log(level, msg)
 
     def _sync_config_status(self, status: str) -> None:
         """Atualiza o status na janela de configuração se estiver aberta (chamado na thread tk)."""
@@ -322,6 +387,7 @@ class PrinterAgent:
             on_test_print=self._on_test_print_from_config,
             on_test_connection=self._reconnect,
             connection_status=self._status,
+            on_reconnect=self._reconnect,
         )
 
     def _on_config_saved(self, new_config: dict) -> None:

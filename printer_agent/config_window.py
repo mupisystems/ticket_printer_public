@@ -245,6 +245,7 @@ class ConfigWindow:
         on_test_print: Optional[Callable[[str], None]] = None,
         on_test_connection: Optional[Callable] = None,
         connection_status: str = "disconnected",
+        on_reconnect: Optional[Callable] = None,
     ) -> None:
         if cls._instance is not None:
             try:
@@ -256,6 +257,7 @@ class ConfigWindow:
         cls._instance = cls(
             tk_root, current_config, on_save,
             on_test_print, on_test_connection, connection_status,
+            on_reconnect,
         )
 
     def __init__(
@@ -266,10 +268,12 @@ class ConfigWindow:
         on_test_print: Optional[Callable[[str], None]] = None,
         on_test_connection: Optional[Callable] = None,
         connection_status: str = "disconnected",
+        on_reconnect: Optional[Callable] = None,
     ):
         self._on_save = on_save
         self._on_test_print = on_test_print
         self._on_test_connection = on_test_connection
+        self._on_reconnect = on_reconnect
         self._config = current_config
         self._logo_photo = None
         self._icon_photo = None
@@ -447,12 +451,22 @@ class ConfigWindow:
         self._status_lbl = tk.Label(row, bg=C_CARD, font=F_STATUS)
         self._status_lbl.pack(side=tk.LEFT, padx=(8, 0))
 
-        tk.Label(row, text="status da conexão", bg=C_CARD,
-                 fg=C_MUTED, font=F_SUB).pack(side=tk.RIGHT)
+        # Botão para forçar reconexão manual (visível e sempre à mão).
+        self._reconnect_btn = _OBtn(row, "↻  Reconectar", self._reconnect,
+                                    color=C_PRIMARY, w=118, h=28)
+        self._reconnect_btn.pack(side=tk.RIGHT)
         _Icon(row, "plug", size=14, color=C_MUTED, bg=C_CARD).pack(
-            side=tk.RIGHT, padx=(0, 6))
+            side=tk.RIGHT, padx=(0, 8))
 
         self._render_status(status)
+
+    def _reconnect(self) -> None:
+        """Aciona uma reconexão manual e dá feedback imediato no status."""
+        self._render_status("reconnecting")
+        if self._on_reconnect:
+            self._on_reconnect()
+        elif self._on_test_connection:
+            self._on_test_connection()
 
     def _build_content(self, parent: tk.Widget) -> None:
         wrap = tk.Frame(parent, bg=C_BG)
@@ -680,11 +694,13 @@ class ConfigWindow:
             "connected":    C_SUCCESS,
             "disconnected": C_ERROR,
             "connecting":   C_WARNING,
+            "reconnecting": C_WARNING,
         }
         labels = {
             "connected":    "Conectado",
             "disconnected": "Desconectado",
             "connecting":   "Conectando...",
+            "reconnecting": "Reconectando...",
         }
         c = colors.get(status, "#94a3b8")
         self._dot.delete("all")
@@ -766,6 +782,10 @@ class ConfigWindow:
         config.set_auth_token(cfg, self._token_var.get().strip())
         config.save_config(cfg)
         self._config = cfg
+        logger.info(
+            "Configurações salvas pelo usuário (ambiente: %s, impressora: %s). Aplicando e reconectando...",
+            env_label or "-", cfg["printer_name"] or "nenhuma",
+        )
         if self._on_save:
             self._on_save(cfg)
         messagebox.showinfo(
@@ -866,6 +886,9 @@ class LogsWindow:
                 cls._instance = None
         cls._instance = cls(parent)
 
+    # Intervalo de atualização em tempo real (ms).
+    _TICK_MS = 500
+
     def __init__(self, parent: tk.Widget):
         self._window = tk.Toplevel(parent)
         self._window.title("Logs · Agente de Impressão")
@@ -873,16 +896,23 @@ class LogsWindow:
         self._window.resizable(True, True)
         self._window.protocol("WM_DELETE_WINDOW", self._close)
 
+        # Índice absoluto do último registro já renderizado (leitura incremental).
+        self._seen = 0
+        self._tick_job: Optional[str] = None
+
         self._build()
 
         self._window.update_idletasks()
-        w, h = 720, 520
+        # Ajusta à tela (funciona em totens menores que 720×520).
         sw = self._window.winfo_screenwidth()
         sh = self._window.winfo_screenheight()
+        w = min(720, sw - 40)
+        h = min(520, sh - 60)
+        self._window.minsize(min(420, sw - 20), min(300, sh - 40))
         self._window.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
         self._window.focus_force()
-        self._refresh()
-        self._schedule_refresh()
+        self._refresh()          # carga inicial completa
+        self._schedule_tick()    # atualização incremental em tempo real
 
     def _build(self) -> None:
         # Cabeçalho
@@ -926,13 +956,26 @@ class LogsWindow:
         scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
         self._text.pack(fill=tk.BOTH, expand=True)
 
+        # Cores por nível (configuradas uma única vez).
+        self._text.tag_configure("ERROR",   foreground="#f87171")
+        self._text.tag_configure("WARNING", foreground="#fbbf24")
+        self._text.tag_configure("INFO",    foreground="#86efac")
+        self._text.tag_configure("DEBUG",   foreground="#94a3b8")
+
         # Rodapé
         tk.Frame(self._window, bg=C_BORDER, height=1).pack(fill=tk.X)
         footer = tk.Frame(self._window, bg=C_CARD)
         footer.pack(fill=tk.X)
 
-        self._count_lbl = tk.Label(footer, text="", bg=C_CARD, fg=C_MUTED, font=F_SUB)
-        self._count_lbl.pack(side=tk.LEFT, padx=16, pady=12)
+        live = tk.Frame(footer, bg=C_CARD)
+        live.pack(side=tk.LEFT, padx=16, pady=12)
+        self._live_dot = tk.Canvas(live, width=9, height=9, bg=C_CARD, highlightthickness=0)
+        self._live_dot.create_oval(1, 1, 8, 8, fill=C_SUCCESS, outline=C_SUCCESS)
+        self._live_dot.pack(side=tk.LEFT, pady=1)
+        tk.Label(live, text="ao vivo", bg=C_CARD, fg=C_MUTED, font=F_SUB).pack(
+            side=tk.LEFT, padx=(6, 12))
+        self._count_lbl = tk.Label(live, text="", bg=C_CARD, fg=C_MUTED, font=F_SUB)
+        self._count_lbl.pack(side=tk.LEFT)
 
         btn_row = tk.Frame(footer, bg=C_CARD)
         btn_row.pack(side=tk.RIGHT, padx=16, pady=12)
@@ -940,43 +983,71 @@ class LogsWindow:
         _OBtn(btn_row, "Atualizar", self._refresh, color=C_MUTED, w=90, h=34).pack(side=tk.LEFT, padx=(0, 6))
         _Btn(btn_row, "Copiar Logs", self._copy, w=110, h=34).pack(side=tk.LEFT)
 
+    @staticmethod
+    def _line_tag(line: str) -> str:
+        if "[ERROR   ]" in line or "[ERROR]" in line:
+            return "ERROR"
+        if "[WARNING ]" in line or "[WARNING]" in line:
+            return "WARNING"
+        if "[DEBUG   ]" in line or "[DEBUG]" in line:
+            return "DEBUG"
+        return "INFO"
+
+    def _at_bottom(self) -> bool:
+        """True se a rolagem está (quase) no fim — para auto-scroll inteligente."""
+        try:
+            return self._text.yview()[1] >= 0.999
+        except tk.TclError:
+            return True
+
+    def _append_lines(self, lines: list, autoscroll: bool) -> None:
+        if not lines:
+            return
+        self._text.configure(state="normal")
+        for line in lines:
+            self._text.insert(tk.END, line + "\n", self._line_tag(line))
+        self._text.configure(state="disabled")
+        if autoscroll:
+            self._text.see(tk.END)
+
     def _refresh(self) -> None:
+        """Carga completa (abertura, botão Atualizar e após Limpar)."""
         try:
             import log_buffer
-            logs = log_buffer.buffer.get_logs()
+            total, lines = log_buffer.buffer.get_since(0)
             self._text.configure(state="normal")
             self._text.delete("1.0", tk.END)
-            if logs:
-                # Colorir linhas por nível
-                self._text.tag_configure("ERROR",   foreground="#f87171")
-                self._text.tag_configure("WARNING", foreground="#fbbf24")
-                self._text.tag_configure("INFO",    foreground="#86efac")
-                self._text.tag_configure("DEBUG",   foreground="#94a3b8")
-
-                for line in logs.splitlines():
-                    tag = "INFO"
-                    if "[ERROR   ]" in line or "[ERROR]" in line:
-                        tag = "ERROR"
-                    elif "[WARNING ]" in line or "[WARNING]" in line:
-                        tag = "WARNING"
-                    elif "[DEBUG   ]" in line or "[DEBUG]" in line:
-                        tag = "DEBUG"
-                    self._text.insert(tk.END, line + "\n", tag)
-
-                self._text.see(tk.END)
-                lines = logs.count("\n") + 1
-                self._count_lbl.configure(text=f"{lines} linha(s)")
-            else:
-                self._text.insert(tk.END, "Nenhum log registrado ainda.")
-                self._count_lbl.configure(text="0 linha(s)")
             self._text.configure(state="disabled")
+            if lines:
+                self._append_lines(lines, autoscroll=True)
+                self._count_lbl.configure(text=f"{len(lines)} linha(s)")
+            else:
+                self._text.configure(state="normal")
+                self._text.insert(tk.END, "Nenhum log registrado ainda.")
+                self._text.configure(state="disabled")
+                self._count_lbl.configure(text="0 linha(s)")
+            self._seen = total
         except Exception:
             pass
 
-    def _schedule_refresh(self) -> None:
+    def _tick(self) -> None:
+        """Atualização incremental em tempo real: adiciona só as linhas novas."""
         try:
-            self._refresh()
-            self._window.after(2000, self._schedule_refresh)
+            import log_buffer
+            total, new = log_buffer.buffer.get_since(self._seen)
+            if new:
+                stick = self._at_bottom()
+                self._append_lines(new, autoscroll=stick)
+                self._seen = total
+                current = int(self._text.index("end-1c").split(".")[0])
+                self._count_lbl.configure(text=f"{current} linha(s)")
+        except Exception:
+            pass
+
+    def _schedule_tick(self) -> None:
+        try:
+            self._tick()
+            self._tick_job = self._window.after(self._TICK_MS, self._schedule_tick)
         except tk.TclError:
             pass
 
@@ -994,8 +1065,19 @@ class LogsWindow:
         if messagebox.askyesno("Limpar Logs", "Deseja limpar todos os logs?", parent=self._window):
             import log_buffer
             log_buffer.buffer.clear()
-            self._refresh()
+            self._seen = log_buffer.buffer.total()
+            self._text.configure(state="normal")
+            self._text.delete("1.0", tk.END)
+            self._text.insert(tk.END, "Nenhum log registrado ainda.")
+            self._text.configure(state="disabled")
+            self._count_lbl.configure(text="0 linha(s)")
 
     def _close(self) -> None:
+        if self._tick_job is not None:
+            try:
+                self._window.after_cancel(self._tick_job)
+            except tk.TclError:
+                pass
+            self._tick_job = None
         LogsWindow._instance = None
         self._window.destroy()

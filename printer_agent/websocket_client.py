@@ -27,6 +27,12 @@ VALID_SERVER_TYPES = {"auth_ok", "auth_error", "print", "ping"}
 _PRINTED_JOB_TTL = 300  # segundos que um job_id fica registrado como impresso
 _printed_job_ids: dict[str, float] = {}
 
+# Jobs em impressão neste exato momento. Protege contra o mesmo job chegar
+# por duas conexões simultâneas (ex.: durante uma troca de conexão): o cache
+# de "já impresso" só é preenchido DEPOIS da impressão, então sem esta trava
+# os dois processariam o job em paralelo e o ticket sairia duas vezes.
+_inflight_job_ids: set[str] = set()
+
 
 def _cache_path() -> str:
     return os.path.join(config.get_config_dir(), "printed_jobs_cache.json")
@@ -85,6 +91,7 @@ class PrinterWebSocketClient:
         on_error: Optional[Callable[[str], None]] = None,
         on_auth_failed: Optional[Callable[[str], None]] = None,
         on_print_result: Optional[Callable[[str, bool, str], None]] = None,
+        on_reconnecting: Optional[Callable] = None,
     ):
         self.ws_url = ws_url
         self.auth_token = auth_token
@@ -94,14 +101,21 @@ class PrinterWebSocketClient:
         self._on_error = on_error
         self._on_auth_failed = on_auth_failed
         self._on_print_result = on_print_result
+        self._on_reconnecting = on_reconnecting
         self._running = False
         self._backoff = 1
         self._max_backoff = 30
         self._ws = None
         self._authenticated = False
+        self._task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
         self._running = True
+        # Guarda a task para que stop() possa cancelar até um handshake em
+        # andamento (connect() antes de self._ws existir). Sem isso, um
+        # cliente antigo podia completar a conexão após o stop() e virar uma
+        # conexão "zumbi" — causando impressão duplicada de cada job.
+        self._task = asyncio.current_task()
         while self._running:
             try:
                 await self._connect_and_listen()
@@ -121,8 +135,7 @@ class PrinterWebSocketClient:
                     )
                     logger.error(message)
                     self._running = False
-                    if self._on_auth_failed:
-                        self._on_auth_failed(message)
+                    self._safe_call(self._on_auth_failed, message)
                     self._notify_disconnected()
                     break
                 if e.code == 1011:
@@ -132,23 +145,49 @@ class PrinterWebSocketClient:
                     )
                 else:
                     logger.warning("Conexão WebSocket encerrada (código %s): %s", e.code, e)
-                self._notify_disconnected()
-                if self._running:
-                    logger.info("Reconectando em %ds...", self._backoff)
-                    await asyncio.sleep(self._backoff)
-                    self._backoff = min(self._backoff * 2, self._max_backoff)
+                await self._handle_drop()
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.warning(
+                    "Tempo esgotado aguardando resposta do servidor (autenticação/handshake). "
+                    "Servidor pode estar lento ou indisponível."
+                )
+                await self._handle_drop()
             except Exception as e:
-                logger.warning("Conexão perdida: %s", e)
-                self._notify_disconnected()
-                if self._running:
-                    logger.info("Reconectando em %ds...", self._backoff)
-                    await asyncio.sleep(self._backoff)
-                    self._backoff = min(self._backoff * 2, self._max_backoff)
+                # Alguns erros trazem mensagem vazia; usa o tipo como fallback.
+                logger.warning("Conexão perdida: %s", e or type(e).__name__)
+                await self._handle_drop()
+
+    async def _handle_drop(self) -> None:
+        """Trata uma queda de conexão: sinaliza estado e aguarda o backoff.
+
+        Se ainda vamos tentar de novo, o estado é "reconnecting" (visível na
+        UI e nos logs). Só quando paramos de vez o estado vira "disconnected".
+        """
+        if self._running:
+            self._notify_reconnecting()
+            logger.info("Reconectando em %ds...", self._backoff)
+            await asyncio.sleep(self._backoff)
+            self._backoff = min(self._backoff * 2, self._max_backoff)
+        else:
+            self._notify_disconnected()
 
     async def stop(self) -> None:
         self._running = False
+        # Cancela a task do loop de conexão — inclusive um handshake em
+        # andamento que ainda não atribuiu self._ws.
+        task = self._task
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         if self._ws:
-            await self._ws.close()
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+        self._notify_disconnected()
 
     async def _connect_and_listen(self) -> None:
         self._authenticated = False
@@ -173,12 +212,16 @@ class PrinterWebSocketClient:
                 error_msg = auth_msg.get("message", "Token inválido")
                 logger.error("Autenticação rejeitada: %s", error_msg)
                 self._running = False  # Para de reconectar
-                if self._on_auth_failed:
-                    self._on_auth_failed(error_msg)
+                self._safe_call(self._on_auth_failed, error_msg)
                 return
 
             if auth_msg.get("type") != "auth_ok":
                 raise ConnectionError(f"Resposta inesperada: {auth_msg.get('type')}")
+
+            # stop() pode ter sido chamado durante o handshake — não seguir
+            # com uma conexão que já foi substituída (evita cliente zumbi).
+            if not self._running:
+                return
 
             # Autenticado com sucesso
             self._authenticated = True
@@ -214,28 +257,40 @@ class PrinterWebSocketClient:
             await self._send_result(job_id, "success", "Já impresso")
             return
 
+        # Job já em impressão por outra conexão/mensagem — não duplicar.
+        has_real_id = bool(job_id) and job_id != "unknown"
+        if has_real_id and job_id in _inflight_job_ids:
+            logger.warning("Job %s já em impressão — ignorando duplicata simultânea", job_id)
+            await self._send_result(job_id, "success", "Já em impressão")
+            return
+
         data = msg.get("data")
 
         if not isinstance(data, dict):
             await self._send_result(job_id, "error", "Campo 'data' ausente ou inválido")
             return
 
-        # Impressão em thread separada para não bloquear o event loop
-        loop = asyncio.get_event_loop()
-        success, message, reached_spooler = await loop.run_in_executor(
-            None, printer_service.print_ticket, self.printer_name, data
-        )
+        if has_real_id:
+            _inflight_job_ids.add(job_id)
+        try:
+            # Impressão em thread separada para não bloquear o event loop
+            loop = asyncio.get_event_loop()
+            success, message, reached_spooler = await loop.run_in_executor(
+                None, printer_service.print_ticket, self.printer_name, data
+            )
 
-        # Registra o job se dados foram enviados ao spooler, mesmo em caso de
-        # falha de detecção — evita duplicata quando o servidor reenviar o
-        # mesmo job_id (o ticket pode já ter sido impresso fisicamente).
-        if success or reached_spooler:
-            _register_printed_job(job_id)
+            # Registra o job se dados foram enviados ao spooler, mesmo em caso
+            # de falha de detecção — evita duplicata quando o servidor reenviar
+            # o mesmo job_id (o ticket pode já ter sido impresso fisicamente).
+            if success or reached_spooler:
+                _register_printed_job(job_id)
+        finally:
+            if has_real_id:
+                _inflight_job_ids.discard(job_id)
 
         status = "success" if success else "error"
         await self._send_result(job_id, status, message)
-        if self._on_print_result:
-            self._on_print_result(job_id, success, message)
+        self._safe_call(self._on_print_result, job_id, success, message)
 
     async def _send_result(self, job_id: str, status: str, message: str) -> None:
         response = {
@@ -260,13 +315,27 @@ class PrinterWebSocketClient:
             logger.warning("Mensagem JSON inválida: %s", e)
             return None
 
+    @staticmethod
+    def _safe_call(cb, *args) -> None:
+        """Invoca um callback de UI sem deixar exceções derrubarem a conexão."""
+        if not cb:
+            return
+        try:
+            cb(*args)
+        except Exception:
+            logger.debug("Erro em callback de status (ignorado)", exc_info=True)
+
     def _notify_connected(self) -> None:
-        if self._on_connected:
-            self._on_connected()
+        self._safe_call(self._on_connected)
 
     def _notify_disconnected(self) -> None:
-        if self._on_disconnected:
-            self._on_disconnected()
+        self._safe_call(self._on_disconnected)
+
+    def _notify_reconnecting(self) -> None:
+        if self._on_reconnecting:
+            self._safe_call(self._on_reconnecting)
+        else:
+            self._safe_call(self._on_disconnected)
 
     def update_config(self, ws_url: str, auth_token: str, printer_name: str) -> None:
         self.ws_url = ws_url
