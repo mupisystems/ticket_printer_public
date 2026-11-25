@@ -26,6 +26,8 @@ STATUS_LABELS = {
     "disconnected": "Desconectado",
     "connecting": "Conectando...",
     "reconnecting": "Reconectando...",
+    "auth_failed": "Chave recusada",
+    "server_error": "Erro no servidor",
 }
 
 TRAY_ICON_SIZE = 64

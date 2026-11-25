@@ -1,9 +1,12 @@
-# PyInstaller spec para printer_agent.exe
-# Gerar: pyinstaller printer_agent.spec
-# (executar na pasta printer_agent)
+# PyInstaller spec do Agente de Impressão — build ONEDIR (pasta), usado pelo instalador.
+# Gerar: pyinstaller --clean --noconfirm printer_agent.spec   (na pasta printer_agent)
+# Saída: dist\AgenteImpressao\AgenteImpressao.exe (+ _internal\)
+# Instalador: build_installer.bat (Inno Setup) empacota essa pasta.
 
 import os
 import sys
+
+from PyInstaller.utils.hooks import collect_data_files
 
 
 def _resolve_windows_icon(spec_dir: str) -> str | None:
@@ -33,22 +36,27 @@ def _resolve_windows_icon(spec_dir: str) -> str | None:
 
     return None
 
+
 # PyInstaller define SPECPATH = pasta do .spec quando executa o spec
 spec_dir = SPECPATH
 exe_icon = _resolve_windows_icon(spec_dir)
 
 sys.path.insert(0, spec_dir)
-from config import APP_VERSION
-exe_name = f'App de Impressao - Meu Atendimento Virtual {APP_VERSION}'
+APP_NAME = 'AgenteImpressao'   # nome fixo: atalhos e inicialização automática apontam para ele
 
 block_cipher = None
 
-# Ícones e assets: logo.png (cabeçalho), tray_icon.png (bandeja)
+# Assets: tray_icon.png/logo.png (bandeja) e a interface web (ui/)
 datas = []
 for name in ('logo.png', 'tray_icon.png'):
     path = os.path.join(spec_dir, name)
     if os.path.isfile(path):
         datas.append((path, '.'))
+datas.append((os.path.join(spec_dir, 'ui'), 'ui'))
+
+# pywebview carrega seus scripts (webview/js/*.js) em tempo de execução; o hook
+# padrão só copia as DLLs do WebView2 (webview/lib).
+datas += collect_data_files('webview', subdir='js')
 
 # python-escpos precisa de capabilities.json no pacote (importlib_resources)
 try:
@@ -70,18 +78,25 @@ a = Analysis(
         'printer_service',
         'websocket_client',
         'tray',
-        'config_window',
+        'app_window',
         'ticket_formatter',
+        'ticket_preview',
+        'ticket_logo',
+        'log_buffer',
+        'windows_startup',
         'pystray._win32',
-        'PIL._tkinter_finder',
+        'webview.platforms.winforms',
+        'webview.platforms.edgechromium',
+        'clr',
         'win32print',
         'win32ui',
         'win32crypt',
+        'win32clipboard',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['tkinter', '_tkinter'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -93,17 +108,13 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
-    name=exe_name,
+    exclude_binaries=True,
+    name=APP_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,  # UPX desativado: compressão UPX aumenta falsos positivos em AVs
-    upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,  # sem janela de console (app de bandeja)
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -112,4 +123,14 @@ exe = EXE(
     entitlements_file=None,
     icon=exe_icon,
     version=os.path.join(spec_dir, 'version_info.txt'),
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name=APP_NAME,
 )

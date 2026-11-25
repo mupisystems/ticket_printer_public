@@ -3,7 +3,7 @@ Entry point do agente de impressão v2.
 Coordena system tray, WebSocket client e janela de configuração.
 
 Threading model:
-  - Main thread: tkinter (hidden root + config window as Toplevel)
+  - Main thread: pywebview (janela da interface — HTML/CSS/JS em ui/)
   - Background thread 1: pystray (system tray icon)
   - Background thread 2: asyncio event loop (WebSocket client)
 """
@@ -13,7 +13,6 @@ import sys
 import asyncio
 import logging
 import threading
-import tkinter as tk
 import msvcrt
 import socket
 from contextlib import closing
@@ -33,12 +32,16 @@ import log_buffer
 from logging.handlers import RotatingFileHandler
 from websocket_client import PrinterWebSocketClient
 from tray import TrayIcon
-from config_window import ConfigWindow
+from app_window import AppWindow
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    # Sem console (versão instalada) sys.stdout é None
+    handlers=[logging.StreamHandler(sys.stdout)] if sys.stdout else [logging.NullHandler()],
+    # A python-escpos já configura o log ao ser importada (nível WARNING); sem
+    # force, esta configuração era ignorada e os registros INFO se perdiam.
+    force=True,
 )
 log_buffer.install()
 
@@ -144,7 +147,7 @@ class PrinterAgent:
         self._ws_client: PrinterWebSocketClient | None = None
         self._tray: TrayIcon | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._tk_root: tk.Tk | None = None
+        self._ui: AppWindow | None = None
         self._status = "disconnected"
         self._activation_server: ActivationServer | None = None
         self._pending_open_config = False
@@ -183,10 +186,27 @@ class PrinterAgent:
         print("=============================================")
         print()
 
+        # Interface (criada antes das threads para receber status desde o início).
+        # Em modo --background a janela começa oculta; o ícone da bandeja a abre.
+        self._ui = AppWindow(
+            get_config=lambda: self._config,
+            get_status=lambda: self._status,
+            on_save=self._on_config_saved,
+            on_reconnect=self._reconnect,
+            on_test_print=self._on_test_print_from_config,
+            on_first_hide=self._notify_still_running,
+            on_config_quiet=self._set_config_quiet,
+            start_hidden=not (open_config_on_start or self._pending_open_config),
+        )
+        self._pending_open_config = False
+
         self._activation_server = ActivationServer(self._request_open_config)
         self._activation_server.start()
 
-        # Thread 2: asyncio event loop
+        # Thread 2: asyncio event loop. O loop é criado aqui, antes da thread: o
+        # pedido de conexão automática logo abaixo se perdia (em silêncio) quando
+        # a thread ainda não o tinha criado, e o totem ficava desconectado.
+        self._loop = asyncio.new_event_loop()
         ws_thread = threading.Thread(target=self._run_async_loop, daemon=True)
         ws_thread.start()
 
@@ -211,20 +231,14 @@ class PrinterAgent:
         ):
             self._schedule_connect()
         else:
-            logger.info("URL e/ou token não configurados — abra as configurações pelo ícone na bandeja")
+            logger.info("URL e/ou chave não configuradas — abra as configurações pelo ícone na bandeja")
 
-        # Main thread: tkinter (hidden root)
-        self._tk_root = tk.Tk()
-        self._tk_root.withdraw()
-        if open_config_on_start or self._pending_open_config:
-            self._pending_open_config = False
-            self._tk_root.after(0, self._open_config)
-        self._tk_root.mainloop()  # Blocks here — handles config window events
+        # Main thread: interface (bloqueia aqui até o agente ser encerrado)
+        self._ui.run()
 
     # -- Async loop --
 
     def _run_async_loop(self) -> None:
-        self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
@@ -272,6 +286,8 @@ class PrinterAgent:
             on_error=lambda msg: logger.error("WebSocket erro: %s", msg),
             on_auth_failed=lambda msg, g=gen: self._handle_auth_failed(msg, g),
             on_print_result=lambda job, ok, m, g=gen: self._on_print_result(job, ok, m, g),
+            on_ticket_sample=self._on_ticket_sample,
+            on_server_error=lambda msg, g=gen: self._handle_server_error(msg, g),
         )
 
         # Inicia monitor periódico de impressora junto com a conexão
@@ -287,6 +303,10 @@ class PrinterAgent:
     def _on_ws_disconnected(self, gen: int) -> None:
         # Ignora "disconnected" de um cliente antigo já substituído.
         if gen != self._connect_generation:
+            return
+        # Token recusado / erro do servidor são mais específicos que
+        # "desconectado": mantém para a interface orientar o usuário.
+        if self._status in ("auth_failed", "server_error"):
             return
         self._set_status("disconnected")
 
@@ -306,6 +326,8 @@ class PrinterAgent:
         # é problema da impressora, não da conexão com o servidor).
         if self._status != "connected":
             self._set_status("connected")
+        if self._ui:
+            self._ui.record_print(job_id, success, message)
         printer_name = self._config.get("printer_name", "")
         if self._tray:
             self._tray.set_printer_status(success, printer_name)
@@ -331,8 +353,14 @@ class PrinterAgent:
     def _handle_auth_failed(self, message: str, gen: int | None = None) -> None:
         if gen is not None and gen != self._connect_generation:
             return
-        self._set_status("disconnected")
-        logger.error("Autenticação falhou: %s — verifique o token nas configurações", message)
+        self._set_status("auth_failed")
+        logger.error("Autenticação falhou: %s — verifique a chave nas configurações", message)
+
+    def _handle_server_error(self, message: str, gen: int | None = None) -> None:
+        if gen is not None and gen != self._connect_generation:
+            return
+        self._set_status("server_error")
+        logger.error("O servidor falhou ao validar a chave (erro interno): %s", message)
 
     # Mensagens amigáveis (nível de log, texto) para cada estado da conexão.
     _STATUS_LOG = {
@@ -340,6 +368,8 @@ class PrinterAgent:
         "connected":    (logging.INFO,    "Aplicativo conectado ao servidor. Pronto para imprimir."),
         "reconnecting": (logging.WARNING, "Conexão perdida — reconectando ao servidor..."),
         "disconnected": (logging.WARNING, "Aplicativo desconectado do servidor."),
+        "auth_failed":  (logging.ERROR,   "Aplicativo desconectado: o servidor recusou a chave."),
+        "server_error": (logging.ERROR,   "Aplicativo desconectado: erro interno do servidor ao validar a chave."),
     }
 
     def _set_status(self, status: str) -> None:
@@ -349,46 +379,44 @@ class PrinterAgent:
                 self._tray.set_status(status)
             except Exception:
                 logger.debug("Falha ao atualizar status na bandeja", exc_info=True)
-        root = self._tk_root
-        if root is not None:
+        if self._ui:
+            # Só enfileira o evento (não bloqueia) — isso NUNCA pode
+            # derrubar a thread da conexão.
             try:
-                root.after(0, lambda s=status: self._sync_config_status(s))
-            except (RuntimeError, tk.TclError):
-                # Chamado de outra thread antes do mainloop iniciar (ou após
-                # encerrar). A janela lê o status atual ao abrir, então não
-                # há perda — e isso NUNCA pode derrubar a thread da conexão.
-                pass
+                self._ui.push_status(status)
+            except Exception:
+                logger.debug("Falha ao atualizar status na interface", exc_info=True)
         # Registra a transição no log (uma vez por mudança de estado).
         if status != self._last_logged_status:
             self._last_logged_status = status
             level, msg = self._STATUS_LOG.get(status, (logging.INFO, f"Status: {status}"))
             logger.log(level, msg)
 
-    def _sync_config_status(self, status: str) -> None:
-        """Atualiza o status na janela de configuração se estiver aberta (chamado na thread tk)."""
-        if ConfigWindow._instance is not None:
-            ConfigWindow._instance.update_status(status)
-
-    # -- Config window (scheduled on tkinter main thread) --
+    # -- Janela da interface --
 
     def _request_open_config(self) -> None:
-        """Chamado da thread do tray — agenda abertura na thread do tkinter."""
-        if self._tk_root:
-            self._tk_root.after(0, self._open_config)
+        """Chamado da thread do tray / servidor de ativação — mostra a janela."""
+        if self._ui:
+            self._ui.show()
             return
         self._pending_open_config = True
 
-    def _open_config(self) -> None:
-        """Executa na thread principal do tkinter."""
-        ConfigWindow.show(
-            tk_root=self._tk_root,
-            current_config=self._config,
-            on_save=self._on_config_saved,
-            on_test_print=self._on_test_print_from_config,
-            on_test_connection=self._reconnect,
-            connection_status=self._status,
-            on_reconnect=self._reconnect,
-        )
+    def _notify_still_running(self) -> None:
+        """Na primeira vez que a janela é fechada, avisa que o agente segue ativo."""
+        if self._tray:
+            self._tray.notify(
+                "O agente continua ativo",
+                "As senhas seguem sendo impressas. Abra pelo ícone perto do relógio.",
+            )
+
+    def _on_ticket_sample(self, data: dict, source: str) -> None:
+        """Formato real do ticket da conta (para as prévias do comprovante)."""
+        if self._ui:
+            self._ui.ticket_sample(data, source)
+
+    def _set_config_quiet(self, new_config: dict) -> None:
+        """Ajuste que não muda a conexão (ex.: logo do comprovante): só atualiza."""
+        self._config = new_config
 
     def _on_config_saved(self, new_config: dict) -> None:
         self._config = new_config
@@ -396,8 +424,10 @@ class PrinterAgent:
         self.sync_windows_startup()
         self._reconnect()
 
-    def _on_test_print_from_config(self, printer_name: str) -> tuple[bool, str]:
-        success, msg = printer_service.test_print(printer_name)
+    def _on_test_print_from_config(self, printer_name: str, receipt_model: str | None = None,
+                                   with_qr: bool | None = None,
+                                   paper: str | None = None) -> tuple[bool, str]:
+        success, msg = printer_service.test_print(printer_name, receipt_model, with_qr, paper)
         logger.info("Teste de impressão: %s — %s", "OK" if success else "FALHA", msg)
         return success, msg
 
@@ -416,6 +446,10 @@ class PrinterAgent:
             return
         success, msg = printer_service.test_print(printer_name)
         logger.info("Teste de impressão: %s — %s", "OK" if success else "FALHA", msg)
+        if self._ui:
+            self._ui.add_activity("success" if success else "error",
+                                  "Impressão de teste" + (" enviada" if success else " falhou"),
+                                  printer_name if success else msg)
         if self._tray:
             title = "Impressão de Teste"
             self._tray.notify(title, msg)
@@ -435,8 +469,8 @@ class PrinterAgent:
             self._activation_server.stop()
         if self._tray:
             self._tray.stop()
-        if self._tk_root:
-            self._tk_root.after(0, self._tk_root.quit)
+        if self._ui:
+            self._ui.quit()
 
 
 def _notify_running_instance_open_config() -> bool:

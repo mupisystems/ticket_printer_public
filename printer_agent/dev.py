@@ -1,6 +1,9 @@
 """
 Modo desenvolvimento: roda o agente e reinicia automaticamente quando
-algum arquivo .py for salvo. Use: python dev.py
+algum arquivo .py (ou da interface em ui/) for salvo. Use: python dev.py
+
+Dica: PRINTER_AGENT_DEBUG=1 abre as ferramentas de desenvolvedor da janela.
+Para mexer só no visual, sirva a pasta ui/ e abra index.html?mock no navegador.
 """
 
 import os
@@ -14,16 +17,19 @@ def _script_dir() -> str:
 
 
 def _py_mtimes() -> dict:
-    """Retorna dict path -> mtime dos .py no diretório do agente."""
+    """Retorna dict path -> mtime dos .py do agente e dos arquivos da interface."""
     base = _script_dir()
+    candidates = [os.path.join(base, n) for n in os.listdir(base) if n.endswith(".py")]
+    ui_dir = os.path.join(base, "ui")
+    if os.path.isdir(ui_dir):
+        candidates += [os.path.join(ui_dir, n) for n in os.listdir(ui_dir)
+                       if n.endswith((".html", ".css", ".js"))]
     out = {}
-    for name in os.listdir(base):
-        if name.endswith(".py"):
-            path = os.path.join(base, name)
-            try:
-                out[path] = os.path.getmtime(path)
-            except OSError:
-                pass
+    for path in candidates:
+        try:
+            out[path] = os.path.getmtime(path)
+        except OSError:
+            pass
     return out
 
 

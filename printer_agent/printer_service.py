@@ -8,8 +8,11 @@ import threading
 import time
 import config
 from escpos.printer import Win32Raw
+from datetime import datetime
 from ticket_formatter import (
+    RAW_LAYOUTS,
     format_ticket,
+    format_ticket_layout,
     format_ticket_thermal_classic,
     validate_print_data,
 )
@@ -54,6 +57,21 @@ def _check_printer_status(printer_name: str) -> tuple[bool, str]:
     except Exception as e:
         logger.debug("Verificação de status da impressora: %s", e)
     return True, ""
+
+
+def get_printer_status(printer_name: str) -> tuple[bool, str]:
+    """Status da impressora para a interface: (pronta, motivo_se_não).
+
+    Diferente de _check_printer_status, informa quando a impressora não existe
+    mais no Windows (removida ou renomeada) em vez de considerá-la pronta.
+    """
+    if not WIN32_AVAILABLE:
+        return True, ""
+    try:
+        win32print.ClosePrinter(win32print.OpenPrinter(printer_name))
+    except Exception:
+        return False, "impressora não encontrada"
+    return _check_printer_status(printer_name)
 
 
 def _pending_job_ids(printer_name: str) -> set[int]:
@@ -300,14 +318,26 @@ def list_printers() -> list[str]:
         return []
 
 
+def _logo_bytes(cfg: dict) -> bytes:
+    """Logo configurado (ESC/POS) — um problema no logo nunca impede a impressão."""
+    try:
+        import ticket_logo
+        return ticket_logo.raster_bytes(cfg)
+    except Exception as e:
+        logger.warning("Logo do comprovante ignorado: %s", e)
+        return b""
+
+
 def _get_printer(printer_name: str) -> Win32Raw:
     return Win32Raw(printer_name, profile="TM-T20II")
 
 
-def print_ticket(printer_name: str, data: dict) -> tuple[bool, str, bool]:
+def print_ticket(printer_name: str, data: dict, receipt_model: str | None = None,
+                 paper: str | None = None) -> tuple[bool, str, bool]:
     """
     Imprime um ticket na impressora especificada.
-    Usa o modelo de comprovante configurado (padrão ou clássico térmico).
+    Usa o modelo de comprovante configurado, ou ``receipt_model`` quando
+    informado (ex.: exemplo de um modelo ainda não salvo).
 
     Returns:
         (success, message, reached_spooler)
@@ -330,7 +360,12 @@ def print_ticket(printer_name: str, data: dict) -> tuple[bool, str, bool]:
             return False, msg, False
 
         cfg = config.load_config()
-        receipt_model = cfg.get("receipt_model", "default")
+        if not receipt_model:
+            receipt_model = cfg.get("receipt_model", "default")
+        if paper:
+            cfg = dict(cfg, paper_width=paper)
+        paper = cfg.get("paper_width", "80")
+        logo = _logo_bytes(cfg)
 
         # Limpa jobs antigos presos de tentativas anteriores com impressora desconectada.
         if _all_job_ids(printer_name):
@@ -341,7 +376,9 @@ def print_ticket(printer_name: str, data: dict) -> tuple[bool, str, bool]:
         before_all = _all_job_ids(printer_name)
 
         if receipt_model == "thermal_classic":
-            ok, msg = format_ticket_thermal_classic(printer_name, data)
+            ok, msg = format_ticket_thermal_classic(printer_name, data, logo, paper)
+        elif receipt_model in RAW_LAYOUTS:
+            ok, msg = format_ticket_layout(printer_name, data, receipt_model, logo, paper)
         else:
             try:
                 printer = _get_printer(printer_name)
@@ -351,7 +388,7 @@ def print_ticket(printer_name: str, data: dict) -> tuple[bool, str, bool]:
                 return False, msg, False
 
             try:
-                format_ticket(printer, data)
+                format_ticket(printer, data, logo)
                 printer.close()
                 ok, msg = True, "Ticket impresso com sucesso"
             except Exception as e:
@@ -410,19 +447,29 @@ def print_ticket(printer_name: str, data: dict) -> tuple[bool, str, bool]:
         return True, "Ticket impresso com sucesso", True
 
 
-def test_print(printer_name: str) -> tuple[bool, str]:
+def test_print(printer_name: str, receipt_model: str | None = None,
+               with_qr: bool | None = None, paper: str | None = None) -> tuple[bool, str]:
+    """Imprime um ticket de exemplo (modelo configurado ou ``receipt_model``).
+
+    Usa o mesmo exemplo da prévia: cabeçalho/rodapé/QR do último ticket real da
+    conta quando conhecidos. ``with_qr`` força com/sem QR Code (None = automático).
+    """
     # Garante que a fila esteja vazia antes do teste — evita imprimir jobs
     # presos de falhas anteriores (impressora que estava desconectada).
     purge_print_queue(printer_name)
 
-    test_data = {
-        "header": "=== TESTE DE IMPRESSÃO ===",
-        "code": "T001",
-        "services": "Teste",
-        "created_date": "2024-01-01 00:00",
-        "footer": "Impressão de teste OK",
-    }
-    ok, msg, _ = print_ticket(printer_name, test_data)
+    try:
+        import ticket_preview
+        test_data = ticket_preview.sample_data(with_qr)
+    except Exception:
+        test_data = {
+            "header": "Bem-vindo!",
+            "services": "Teste de impressão",
+            "created_date": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "footer": "Impressão de teste OK",
+        }
+    test_data["code"] = "T001"          # código de teste, para não confundir com senha real
+    ok, msg, _ = print_ticket(printer_name, test_data, receipt_model=receipt_model, paper=paper)
     if ok:
         logger.info("Teste de impressão OK (%s)", printer_name)
         return True, "Impressão de teste realizada com sucesso!"

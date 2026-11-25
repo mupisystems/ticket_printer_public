@@ -1,14 +1,21 @@
-# Impressão de Senhas de Atendimento
+# Agente de Impressão — Meu Atendimento Virtual
 
-## Configurações
+Aplicativo para Windows que imprime automaticamente as senhas de atendimento na impressora térmica do totem ou da recepção.
 
-Siga as instruções abaixo para configurar a impressão de senhas de atendimento:
+## Baixar
 
-1. Faça o download do arquivo main.exe. Recomendamos salvar o arquivo na área de trabalho, pois ele será executado para estabelecer a conexão com a impressora.
-2. Verifique as configurações de impressão na plataforma. Acesse a área administrativa e navegue até Configurações > Geral.
-3. Marque a opção "Imprimir Senha".
-4. No campo "Método de impressão de senhas", selecione a opção "Aplicativo de Impressão".
-5. Certifique-se de seguir essas configurações para garantir que a impressão de senhas de atendimento funcione corretamente.
+**[Baixar a versão mais recente](https://github.com/mupisystems/ticket_printer_public/releases/latest/download/AgenteImpressao-Setup.exe)** (Windows 10 ou 11, 64 bits)
 
-## Para compilar o arquivo executável:
-pyinstaller printer_app.spec
+Versões anteriores e novidades: [Releases](https://github.com/mupisystems/ticket_printer_public/releases).
+
+O instalador não é assinado digitalmente. Se o Windows mostrar "fornecedor desconhecido", clique em **Mais informações > Executar assim mesmo**.
+
+## Configurar
+
+Siga o tutorial [Como Configurar a Impressão de Senhas](https://meuatendimentovirtual.com.br/documentacao/impressao-de-senhas/).
+
+## Desenvolvimento
+
+Código, build e publicação: [printer_agent/README.md](printer_agent/README.md).
+
+`printer_app.py` é o aplicativo da primeira geração (`main.exe`), mantido apenas como referência. Ele foi substituído pelo Agente de Impressão.

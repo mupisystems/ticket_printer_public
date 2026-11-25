@@ -5,6 +5,7 @@ Token de autenticação cifrado com Windows DPAPI.
 """
 
 import os
+import sys
 import json
 import base64
 import logging
@@ -18,7 +19,7 @@ except ImportError:
     DPAPI_AVAILABLE = False
     logger.warning("win32crypt não disponível — token será armazenado em texto puro")
 
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.3.0"
 
 ENVIRONMENTS = {
     "localhost": "ws://localhost:8000/ws/printer",
@@ -37,8 +38,12 @@ ENVIRONMENT_LABELS = {
 }
 
 RECEIPT_MODEL_LABELS = {
-    "default": "Modelo reduzido",
-    "thermal_classic": "Modelo destaque",
+    "default": "Reduzido",
+    "thermal_classic": "Destaque",
+    "compact": "Compacto",
+    "big_number": "Senha gigante",
+    "inverted": "Faixa escura",
+    "framed": "Moldura",
 }
 
 DEFAULT_CONFIG = {
@@ -49,6 +54,9 @@ DEFAULT_CONFIG = {
     "auto_connect": True,
     "start_with_windows": True,
     "receipt_model": "default",
+    "logo_enabled": False,        # logo no topo do comprovante (ticket_logo.py)
+    "logo_size": "medium",
+    "paper_width": "80",          # bobina em mm: "80" ou "58"
 }
 
 
@@ -116,6 +124,28 @@ def get_auth_token(config: dict) -> str:
 
 def set_auth_token(config: dict, token: str) -> None:
     config["auth_token_encrypted"] = _encrypt_token(token)
+
+
+def get_install_id() -> str:
+    """Identificador da instalação atual, gravado pelo instalador em install.id
+    (ao lado do executável). Vazio fora da versão instalada."""
+    override = os.environ.get("PRINTER_AGENT_INSTALL_ID")   # para testes
+    if override:
+        return override
+    if not getattr(sys, "frozen", False):
+        return ""
+    try:
+        with open(os.path.join(os.path.dirname(sys.executable), "install.id"), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def onboarding_required(config: dict) -> bool:
+    """True após uma instalação/atualização: o app abre o fluxo de boas-vindas do
+    início (mantendo a configuração) até ele ser concluído nesta instalação."""
+    install_id = get_install_id()
+    return bool(install_id) and config.get("onboarded_install_id") != install_id
 
 
 def get_ws_url(config: dict) -> str:

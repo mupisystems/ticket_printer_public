@@ -15,6 +15,7 @@ from websockets.exceptions import ConnectionClosed
 
 import config
 import printer_service
+from ticket_formatter import validate_print_data
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,8 @@ class PrinterWebSocketClient:
         on_auth_failed: Optional[Callable[[str], None]] = None,
         on_print_result: Optional[Callable[[str, bool, str], None]] = None,
         on_reconnecting: Optional[Callable] = None,
+        on_ticket_sample: Optional[Callable[[dict, str], None]] = None,
+        on_server_error: Optional[Callable[[str], None]] = None,
     ):
         self.ws_url = ws_url
         self.auth_token = auth_token
@@ -102,6 +105,8 @@ class PrinterWebSocketClient:
         self._on_auth_failed = on_auth_failed
         self._on_print_result = on_print_result
         self._on_reconnecting = on_reconnecting
+        self._on_ticket_sample = on_ticket_sample
+        self._on_server_error = on_server_error
         self._running = False
         self._backoff = 1
         self._max_backoff = 30
@@ -135,7 +140,12 @@ class PrinterWebSocketClient:
                     )
                     logger.error(message)
                     self._running = False
-                    self._safe_call(self._on_auth_failed, message)
+                    # 1011 é erro interno do servidor, não recusa do token: um token
+                    # inválido recebe "auth_error". Informa isso separadamente.
+                    if self._on_server_error:
+                        self._safe_call(self._on_server_error, message)
+                    else:
+                        self._safe_call(self._on_auth_failed, message)
                     self._notify_disconnected()
                     break
                 if e.code == 1011:
@@ -226,6 +236,13 @@ class PrinterWebSocketClient:
             # Autenticado com sucesso
             self._authenticated = True
             logger.info("Conectado e autenticado em %s", self.ws_url)
+            # Campos que o servidor envia na autenticação (só os nomes, para diagnóstico).
+            logger.info("Resposta de autenticação do servidor traz: %s", ", ".join(sorted(auth_msg)))
+            # Se o servidor informar o formato do ticket da conta (cabeçalho,
+            # rodapé, QR Code), as prévias passam a usá-lo já na conexão.
+            ticket_info = auth_msg.get("ticket") or auth_msg.get("settings")
+            if isinstance(ticket_info, dict):
+                self._safe_call(self._on_ticket_sample, ticket_info, "servidor")
             self._backoff = 1  # Reset backoff
             self._notify_connected()
 
@@ -269,6 +286,11 @@ class PrinterWebSocketClient:
         if not isinstance(data, dict):
             await self._send_result(job_id, "error", "Campo 'data' ausente ou inválido")
             return
+
+        # Aprende o formato real do ticket da conta (cabeçalho, rodapé, QR Code)
+        # para as prévias do comprovante. Ticket inválido não serve de amostra.
+        if validate_print_data(data)[0]:
+            self._safe_call(self._on_ticket_sample, data, "ticket")
 
         if has_real_id:
             _inflight_job_ids.add(job_id)

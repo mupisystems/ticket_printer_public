@@ -4,6 +4,9 @@ dist/
 *.exe
 *.spec.bak
 
+# Instalador: imagens do assistente geradas por installer/make_wizard_images.py
+installer/assets/
+
 # Pasta de debug (imagens de teste do ticket)
 ticket/
 

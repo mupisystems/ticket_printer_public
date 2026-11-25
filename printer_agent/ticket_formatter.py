@@ -1,6 +1,7 @@
 """
 Formata dados do ticket em comandos ESC/POS e sanitiza campos de entrada.
-Suporta dois modelos: padrão (escpos) e clássico térmico (raw ESC/POS 80mm).
+Modelos: padrão/reduzido (escpos), clássico térmico (raw ESC/POS 80mm) e os
+extras compacto, senha gigante, faixa escura e moldura (raw, RAW_LAYOUTS).
 """
 
 import re
@@ -52,14 +53,17 @@ def validate_print_data(data: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def format_ticket(printer, data: dict) -> None:
+def format_ticket(printer, data: dict, logo: bytes = b"") -> None:
     """
     Formata e envia um ticket para a impressora via ESC/POS.
 
     Args:
         printer: instância de escpos.printer (já conectada)
         data: dicionário com campos do ticket
+        logo: comandos ESC/POS do logo (ticket_logo.raster_bytes), opcional
     """
+    if logo:
+        printer._raw(logo)
     header = sanitize_field(data["header"], "header")
     code = sanitize_field(data["code"], "code")
     services = sanitize_field(data["services"], "services")
@@ -138,21 +142,46 @@ def _send_escpos_raw(printer_name: str, commands: bytes) -> bool:
         return False
 
 
+# Largura da bobina: colunas usadas pelos modelos (fonte A), colunas da fonte
+# menor (B) e pontos imprimíveis. Em 80 mm cabem 48 colunas; os modelos usam 42.
+PAPERS = {
+    "80": {"cols": 42, "small_cols": 56, "dots": 576},
+    "58": {"cols": 32, "small_cols": 42, "dots": 384},
+}
+DEFAULT_PAPER = "80"
+
+
+def paper_info(paper: str | None) -> dict:
+    return PAPERS.get(str(paper or DEFAULT_PAPER), PAPERS[DEFAULT_PAPER])
+
+
 # Tamanho do módulo do QR no modelo clássico (1-16; maior = QR maior na impressora)
 QR_MODULE_SIZE = 8
 
 
-def _escpos_qrcode_bytes(data: str) -> bytes:
+def _qr_module_size(data: bytes, dots: int) -> int:
+    """Maior módulo (até QR_MODULE_SIZE) em que o QR cabe na largura da bobina."""
+    try:
+        import qrcode
+        code = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=0)
+        code.add_data(data)
+        code.make(fit=True)
+        fits = dots // code.modules_count
+    except Exception:
+        fits = QR_MODULE_SIZE if dots >= PAPERS["80"]["dots"] else 5
+    return max(1, min(16, QR_MODULE_SIZE, fits))
+
+
+def _escpos_qrcode_bytes(data: str, paper: str | None = None) -> bytes:
     """Gera bytes ESC/POS para imprimir QR code (dados sem acentos)."""
     data_clean = _remove_accents(data)
     try:
         data_encoded = data_clean.encode("cp860", errors="ignore")
     except Exception:
         data_encoded = data_clean.encode("utf-8", errors="ignore")
-    pL = len(data_encoded) + 3
-    pH = 0x00
-    store_cmd = b"\x1D\x28\x6B" + bytes([pL & 0xFF, pH, 49, 80, 48]) + data_encoded
-    size_byte = max(1, min(16, QR_MODULE_SIZE))
+    length = len(data_encoded) + 3
+    store_cmd = b"\x1D\x28\x6B" + bytes([length & 0xFF, length >> 8, 49, 80, 48]) + data_encoded
+    size_byte = _qr_module_size(data_encoded, paper_info(paper)["dots"])
     return (
         b"\x1B\x61\x01"  # Center
         + b"\x1D\x28\x6B\x03\x00\x31\x43" + bytes([size_byte])  # QR module size (maior = QR maior)
@@ -179,15 +208,12 @@ def _wrap_text(text: str, line_chars: int = 40) -> list[str]:
     return lines
 
 
-def format_ticket_thermal_classic(printer_name: str, data: dict) -> tuple[bool, str]:
+def build_thermal_classic_bytes(data: dict, logo: bytes = b"", paper: str | None = None) -> bytes:
     """
-    Imprime ticket no modelo clássico térmico (80mm): SENHA em destaque primeiro,
+    Comandos do modelo clássico térmico (80 ou 58 mm): SENHA em destaque primeiro,
     depois header, data, serviços, footer; opcionalmente QR code.
-    Usa comandos ESC/POS brutos (cp860) e win32print.
+    ESC/POS bruto (cp860), sem acentos.
     """
-    if not WIN32PRINT_AVAILABLE:
-        return False, "win32print não disponível"
-
     header = sanitize_field(data["header"], "header")
     code = sanitize_field(data["code"], "code")
     services = sanitize_field(data["services"], "services")
@@ -203,8 +229,10 @@ def format_ticket_thermal_classic(printer_name: str, data: dict) -> tuple[bool, 
         except Exception:
             return _remove_accents(s).encode("utf-8", errors="ignore")
 
+    cols = paper_info(paper)["cols"]
     commands = b""
     commands += b"\x1B\x40"  # Initialize
+    commands += logo         # logo opcional no topo
 
     # SENHA em destaque (duplo tamanho, negrito, centralizado)
     commands += b"\x1B\x21\x30"  # Double height + width
@@ -215,7 +243,7 @@ def format_ticket_thermal_classic(printer_name: str, data: dict) -> tuple[bool, 
     commands += b"\x1B\x45\x00"
 
     commands += b"\x1B\x61\x01"
-    commands += (b"=" * 42) + b"\r\n"
+    commands += (b"=" * cols) + b"\r\n"
 
     # Header (duplo, negrito, centralizado)
     if header:
@@ -227,19 +255,19 @@ def format_ticket_thermal_classic(printer_name: str, data: dict) -> tuple[bool, 
         commands += b"\x1B\x45\x00"
 
     commands += b"\x1B\x61\x01"
-    commands += (b"-" * 42) + b"\r\n"
+    commands += (b"-" * cols) + b"\r\n"
 
-    # Serviços (esquerda, negrito no label, quebra em 40 chars)
+    # Serviços (esquerda, negrito no label, com quebra de linha)
     commands += b"\x1B\x61\x00"  # Left
     commands += b"\x1B\x45\x01"
     commands += b"SERVICOS:\r\n"
     commands += b"\x1B\x45\x00"
-    for line in _wrap_text(services, 40):
+    for line in _wrap_text(services, cols - 2):
         commands += b" " + enc(line) + b"\r\n"
     commands += b"\r\n"
 
     if qrcode_data:
-        commands += _escpos_qrcode_bytes(qrcode_data)
+        commands += _escpos_qrcode_bytes(qrcode_data, paper)
         commands += b"\r\n\r\n"
 
     if footer:
@@ -257,8 +285,238 @@ def format_ticket_thermal_classic(printer_name: str, data: dict) -> tuple[bool, 
     if qrcode_data:
         commands += b"\r\n\r\n\r\n"
     commands += b"\x1D\x56\x01"  # Partial cut
+    return commands
 
+
+def format_ticket_thermal_classic(printer_name: str, data: dict, logo: bytes = b"",
+                                  paper: str | None = None) -> tuple[bool, str]:
+    """Imprime o ticket no modelo clássico térmico via win32print."""
+    if not WIN32PRINT_AVAILABLE:
+        return False, "win32print não disponível"
+
+    commands = build_thermal_classic_bytes(data, logo, paper)
+    code = sanitize_field(data["code"], "code")
     if _send_escpos_raw(printer_name, commands):
         logger.info("Ticket impresso (modelo clássico, código: %s)", code)
+        return True, "Ticket impresso com sucesso"
+    return False, "Falha ao enviar para impressora"
+
+
+# --- Modelos extras (ESC/POS bruto, 80 ou 58 mm) ---------------------------
+#
+# compact     — texto menor e sem espaços sobrando (economiza papel)
+# big_number  — senha enorme, para ler de longe
+# inverted    — faixas escuras (impressão invertida) no topo e no rodapé
+# framed      — informações dentro de uma moldura de traços
+#
+# Em 80 mm usam 42 colunas (mesma régua do modelo clássico, cabe com folga nas
+# 48 da impressora); em 58 mm, as 32 disponíveis. Ver PAPERS.
+
+
+def _enc(text: str) -> bytes:
+    try:
+        return _remove_accents(text).encode("cp860", errors="ignore")
+    except Exception:
+        return _remove_accents(text).encode("utf-8", errors="ignore")
+
+
+def _fit_size(text: str, max_size: int, cols: int) -> int:
+    """Maior ampliação (1..max_size) em que o texto cabe numa linha."""
+    size = max_size
+    while size > 1 and len(text) * size > cols:
+        size -= 1
+    return size
+
+
+class _EscPos:
+    """Montador simples de comandos ESC/POS (texto sem acentos, cp860)."""
+
+    def __init__(self, paper: str | None = None) -> None:
+        self.buf = bytearray(b"\x1B\x40")                     # inicializa
+        self.paper = paper
+        info = paper_info(paper)
+        self.cols, self.small_cols = info["cols"], info["small_cols"]
+
+    def align(self, where: str) -> "_EscPos":
+        self.buf += b"\x1B\x61" + bytes([{"left": 0, "center": 1, "right": 2}[where]])
+        return self
+
+    def bold(self, on: bool = True) -> "_EscPos":
+        self.buf += b"\x1B\x45" + bytes([1 if on else 0])
+        return self
+
+    def size(self, width: int = 1, height: int = 1) -> "_EscPos":
+        self.buf += b"\x1D\x21" + bytes([((width - 1) << 4) | (height - 1)])
+        return self
+
+    def reverse(self, on: bool = True) -> "_EscPos":
+        self.buf += b"\x1D\x42" + bytes([1 if on else 0])    # branco sobre preto
+        return self
+
+    def small(self, on: bool = True) -> "_EscPos":
+        self.buf += b"\x1B\x4D" + bytes([1 if on else 0])    # fonte B (menor)
+        return self
+
+    def spacing(self, dots: int | None = None) -> "_EscPos":
+        """Espaço entre linhas em pontos (None = padrão da impressora)."""
+        self.buf += b"\x1B\x32" if dots is None else b"\x1B\x33" + bytes([dots])
+        return self
+
+    def text(self, text: str) -> "_EscPos":
+        self.buf += _enc(text)
+        return self
+
+    def line(self, text: str = "") -> "_EscPos":
+        self.buf += _enc(text) + b"\r\n"
+        return self
+
+    def lines(self, text: str, width: int | None = None) -> "_EscPos":
+        for part in _wrap_text(text, width or self.cols) or [""]:
+            self.line(part)
+        return self
+
+    def rule(self, char: str = "-") -> "_EscPos":
+        return self.line(char * self.cols)
+
+    def feed(self, n: int = 1) -> "_EscPos":
+        self.buf += b"\r\n" * n
+        return self
+
+    def qr(self, data: str) -> "_EscPos":
+        self.buf += _escpos_qrcode_bytes(data, self.paper) + b"\r\n"
+        return self
+
+    def cut(self, feed: int = 5) -> "_EscPos":
+        self.feed(feed)                                        # leva o papel até a guilhotina
+        self.buf += b"\x1D\x56\x01"                            # corte parcial
+        return self
+
+    def build(self) -> bytes:
+        return bytes(self.buf)
+
+
+def _big_code(t: _EscPos, code: str, max_size: int) -> None:
+    size = _fit_size(code, max_size, t.cols)
+    t.size(size, size).bold().line(code).bold(False).size(1, 1)
+
+
+def _layout_compact(t: _EscPos, f: dict) -> None:
+    t.align("center")
+    if f["header"]:
+        t.bold().lines(f["header"]).bold(False)
+    label = f"SENHA {f['code']}"
+    if len(label) * 2 > t.cols:
+        label = f["code"]
+    _big_code(t, label, 2)
+    t.lines(f"{f['services']} - {f['created_date']}")
+    if f["footer"]:
+        t.small().lines(f["footer"], t.small_cols).small(False)
+    if f["qrcode"]:
+        t.qr(f["qrcode"])
+    t.cut(feed=4)
+
+
+def _layout_big_number(t: _EscPos, f: dict) -> None:
+    t.align("center")
+    if f["header"]:
+        t.bold().lines(f["header"]).bold(False).feed(1)
+    t.line("SUA SENHA")
+    _big_code(t, f["code"], 5)
+    t.feed(1).rule("-")
+    t.size(1, 2).lines(f["services"]).size(1, 1)
+    t.line(f["created_date"])
+    if f["footer"]:
+        t.feed(1).lines(f["footer"])
+    if f["qrcode"]:
+        t.feed(1).qr(f["qrcode"])
+    t.cut()
+
+
+def _band(t: _EscPos, text: str, tall: bool = True) -> None:
+    """Faixa escura de largura total com o texto centralizado em branco."""
+    height = 2 if tall else 1
+    t.spacing(24 * height)            # linhas coladas: a faixa fica contínua
+    for part in _wrap_text(text, t.cols - 4) or [""]:
+        t.reverse().bold().size(1, height)
+        t.line(part.center(t.cols))
+        t.size(1, 1).bold(False).reverse(False)
+    t.spacing(None)
+
+
+def _layout_inverted(t: _EscPos, f: dict) -> None:
+    t.align("center")
+    _band(t, f["header"] or "ATENDIMENTO")
+    t.feed(1).line("SENHA")
+    _big_code(t, f["code"], 3)
+    t.feed(1).align("left")
+    t.bold().text("Servico: ").bold(False)
+    if len("Servico: ") + len(f["services"]) <= t.cols or t.paper in (None, "80"):
+        t.line(_remove_accents(f["services"]))
+    else:
+        t.line().lines(f["services"])
+    t.bold().text("Data: ").bold(False).line(f["created_date"])
+    t.align("center").feed(1)
+    if f["footer"]:
+        _band(t, f["footer"], tall=False)
+    if f["qrcode"]:
+        t.feed(1).qr(f["qrcode"])
+    t.cut()
+
+
+def _framed(t: _EscPos, text: str, align: str = "center") -> None:
+    inner = t.cols - 4
+    for part in _wrap_text(text, inner) or [""]:
+        body = part.center(inner) if align == "center" else part.ljust(inner)
+        t.line(f"| {body} |")
+
+
+def _layout_framed(t: _EscPos, f: dict) -> None:
+    strong = "+" + "=" * (t.cols - 2) + "+"
+    light = "+" + "-" * (t.cols - 2) + "+"
+    t.align("center").line(strong).bold()
+    _framed(t, f["header"] or "ATENDIMENTO")
+    t.bold(False).line(strong)
+    t.feed(1).line("SENHA")
+    _big_code(t, f["code"], 3)
+    t.feed(1).line(light)
+    _framed(t, f"Servico: {f['services']}", align="left")
+    _framed(t, f"Data: {f['created_date']}", align="left")
+    t.line(light)
+    if f["footer"]:
+        t.feed(1).lines(f["footer"])
+    if f["qrcode"]:
+        t.feed(1).qr(f["qrcode"])
+    t.cut()
+
+
+RAW_LAYOUTS = {
+    "compact": _layout_compact,
+    "big_number": _layout_big_number,
+    "inverted": _layout_inverted,
+    "framed": _layout_framed,
+}
+
+
+def build_layout_bytes(data: dict, model: str, logo: bytes = b"",
+                       paper: str | None = None) -> bytes:
+    """Gera os comandos ESC/POS de um modelo extra (sem enviar à impressora)."""
+    fields = {name: sanitize_field(data[name], name)
+              for name in ("header", "code", "services", "created_date", "footer")}
+    qrcode_data = data.get("qrcode")
+    fields["qrcode"] = sanitize_field(qrcode_data, "qrcode") if qrcode_data else ""
+    ticket = _EscPos(paper)
+    ticket.buf += logo                                     # logo opcional no topo
+    RAW_LAYOUTS[model](ticket, fields)
+    return ticket.build()
+
+
+def format_ticket_layout(printer_name: str, data: dict, model: str, logo: bytes = b"",
+                         paper: str | None = None) -> tuple[bool, str]:
+    """Imprime o ticket num dos modelos extras (RAW_LAYOUTS)."""
+    if not WIN32PRINT_AVAILABLE:
+        return False, "win32print não disponível"
+    commands = build_layout_bytes(data, model, logo, paper)
+    if _send_escpos_raw(printer_name, commands):
+        logger.info("Ticket impresso (modelo %s, código: %s)", model, data.get("code", "?"))
         return True, "Ticket impresso com sucesso"
     return False, "Falha ao enviar para impressora"
