@@ -460,7 +460,7 @@
         <button type="button" class="input-btn" data-action="toggle-token" title="${S.showToken ? 'Ocultar' : 'Mostrar'} chave">${icon(S.showToken ? 'eye-off' : 'eye')}</button>
         <button type="button" class="input-btn input-btn--label" data-action="paste-token" data-scope="${scope}">${icon('clipboard-paste')}Colar</button>
       </div>
-      <p class="hint">${icon('info')}<span>No painel, abra <b>Configurações &gt; Painéis e Totens &gt; Impressão de Senhas</b> e copie a chave em <b>Chaves de Impressão</b>.${d.environment === 'producao_br' ? ' <button type="button" class="inline-link" data-action="open-panel">Abrir essa tela</button>' : ''}</span></p>
+      <p class="hint">${icon('info')}<span>No painel, abra <b>Configurações</b> e, no menu lateral, <b>Painéis &amp; Totens &gt; Impressão de Senhas</b>. Copie a chave em <b>Chaves de Impressão</b>.${d.environment === 'producao_br' ? ' <button type="button" class="inline-link" data-action="open-panel">Abrir essa tela</button>' : ''}</span></p>
     </div>`;
   }
 

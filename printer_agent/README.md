@@ -13,7 +13,7 @@ Aplicativo para Windows que recebe as senhas retiradas no totem (via servidor Me
 
 | Passo | O que acontece |
 |-------|----------------|
-| **Conexão** | Cole a **Chave do Totem/Agente de Impressão** (painel → Configurações → Painéis e Totens → Impressão de Senhas → Chaves de Impressão). Ela é validada na hora no servidor de produção. |
+| **Conexão** | Cole a **Chave do Totem/Agente de Impressão** (painel → Configurações → menu lateral Painéis & Totens → Impressão de Senhas → Chaves de Impressão). Ela é validada na hora no servidor de produção. |
 | **Impressora** | Lista as impressoras com o status de cada uma (pronta, offline…) e permite imprimir um ticket de teste. |
 | **Comprovante** | 6 modelos (Reduzido, Destaque, Compacto, Senha gigante, Faixa escura, Moldura) com prévia de como sai no papel, logo opcional no topo (PNG/JPG, 3 tamanhos, convertido para preto e branco) e botão para imprimir um exemplo. Bobina de 80 ou 58 mm. |
 | **Concluir** | Resumo do que foi configurado; qualquer item pode ser alterado. |
